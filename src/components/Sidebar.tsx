@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
 import { 
   Truck, 
@@ -12,9 +12,12 @@ import {
   Wallet, 
   ReceiptText,
   ShieldCheck,
+  History,
   Lock,
-  UserCheck
+  UserCheck,
+  LogOut
 } from 'lucide-react';
+import { Button } from './ui/button';
 
 const navItems = [
   { href: '/', label: 'ภาพรวมระบบ (Dashboard)', icon: LayoutDashboard },
@@ -24,11 +27,18 @@ const navItems = [
   { href: '/expenses', label: 'เบี้ยเลี้ยง & ค่าใช้จ่าย (Expenses)', icon: Wallet },
   { href: '/invoicing', label: 'วางบิล & ปิดงาน (Invoicing)', icon: ReceiptText },
   { href: '/users-roles', label: 'จัดการผู้ใช้ & สิทธิ์ (RBAC)', icon: ShieldCheck },
+  { href: '/audit-logs', label: 'ประวัติการทำงาน (Audit Log)', icon: History },
 ];
 
 export function Sidebar() {
   const pathname = usePathname();
-  const { users, currentUser, currentRole, switchUser, hasAccess } = useAuth();
+  const router = useRouter();
+  const { users, currentUser, currentRole, switchUser, hasAccess, logout } = useAuth();
+
+  const handleLogout = () => {
+    logout();
+    router.push('/login');
+  };
 
   return (
     <aside className="w-64 bg-slate-900 text-slate-100 flex flex-col shrink-0 min-h-screen border-r border-slate-800">
@@ -73,7 +83,7 @@ export function Sidebar() {
       </div>
 
       {/* Navigation Links */}
-      <nav className="flex-1 p-3 space-y-1">
+      <nav className="flex-1 p-3 space-y-1 overflow-y-auto">
         <div className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
           เมนูระบบ (Navigation)
         </div>
@@ -86,7 +96,7 @@ export function Sidebar() {
             <Link
               key={item.href}
               href={item.href}
-              className={`flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
+              className={`flex items-center justify-between px-3 py-2 rounded-lg text-sm font-medium transition-all ${
                 isActive
                   ? 'bg-blue-600 text-white shadow-sm font-semibold'
                   : allowed
@@ -96,11 +106,11 @@ export function Sidebar() {
             >
               <div className="flex items-center gap-3">
                 <Icon className={`h-4 w-4 ${isActive ? 'text-white' : allowed ? 'text-slate-400' : 'text-slate-600'}`} />
-                <span>{item.label}</span>
+                <span className="text-xs">{item.label}</span>
               </div>
               {!allowed && (
                 <span title="ไม่มีสิทธิ์เข้าถึงใน Role นี้">
-                  <Lock className="h-3.5 w-3.5 text-slate-500" />
+                  <Lock className="h-3 w-3 text-slate-500" />
                 </span>
               )}
             </Link>
@@ -108,13 +118,25 @@ export function Sidebar() {
         })}
       </nav>
 
-      {/* System Status Footer */}
-      <div className="p-4 border-t border-slate-800 bg-slate-950/40 text-xs text-slate-400 flex items-center justify-between">
-        <span className="flex items-center gap-2">
-          <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-          Supabase Connected
-        </span>
-        <span className="text-[10px] bg-slate-800 px-1.5 py-0.5 rounded text-slate-300 font-mono">RBAC Pro</span>
+      {/* Logout & Footer */}
+      <div className="p-3 border-t border-slate-800 bg-slate-950/40 space-y-2">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={handleLogout}
+          className="w-full justify-start text-xs text-rose-400 hover:text-rose-300 hover:bg-rose-950/30 gap-2 h-8"
+        >
+          <LogOut className="h-3.5 w-3.5" />
+          ออกจากระบบ (Sign Out)
+        </Button>
+
+        <div className="text-[10px] text-slate-500 flex items-center justify-between pt-1 border-t border-slate-800/80">
+          <span className="flex items-center gap-1.5">
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+            Audit Log Active
+          </span>
+          <span className="font-mono">v1.1</span>
+        </div>
       </div>
     </aside>
   );

@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useAuth, ROLES_CONFIG, UserRole, MOCK_USERS } from '@/lib/auth-context';
+import { useAuth } from '@/lib/auth-context';
 import { 
   Truck, 
   LayoutDashboard, 
@@ -11,9 +11,9 @@ import {
   Send, 
   Wallet, 
   ReceiptText,
+  ShieldCheck,
   Lock,
-  UserCheck,
-  ChevronDown
+  UserCheck
 } from 'lucide-react';
 
 const navItems = [
@@ -23,11 +23,12 @@ const navItems = [
   { href: '/dispatch', label: 'จ่ายงาน & พขร. (Dispatch)', icon: Send },
   { href: '/expenses', label: 'เบี้ยเลี้ยง & ค่าใช้จ่าย (Expenses)', icon: Wallet },
   { href: '/invoicing', label: 'วางบิล & ปิดงาน (Invoicing)', icon: ReceiptText },
+  { href: '/users-roles', label: 'จัดการผู้ใช้ & สิทธิ์ (RBAC)', icon: ShieldCheck },
 ];
 
 export function Sidebar() {
   const pathname = usePathname();
-  const { currentUser, switchRole, hasAccess } = useAuth();
+  const { users, currentUser, currentRole, switchUser, hasAccess } = useAuth();
 
   return (
     <aside className="w-64 bg-slate-900 text-slate-100 flex flex-col shrink-0 min-h-screen border-r border-slate-800">
@@ -47,26 +48,26 @@ export function Sidebar() {
         <div className="flex items-center justify-between text-[11px] text-slate-400 font-semibold mb-1.5 uppercase tracking-wider">
           <span className="flex items-center gap-1">
             <UserCheck className="h-3.5 w-3.5 text-blue-400" />
-            สลับสิทธิ์การใช้งาน (RBAC)
+            ผู้ใช้งานปัจจุบัน (Active User)
           </span>
         </div>
 
         <select
-          value={currentUser.role}
-          onChange={(e) => switchRole(e.target.value as UserRole)}
+          value={currentUser.id}
+          onChange={(e) => switchUser(e.target.value)}
           className="w-full bg-slate-800 border border-slate-700 text-white rounded-lg px-2.5 py-1.5 text-xs font-medium focus:outline-hidden focus:ring-1 focus:ring-blue-500 cursor-pointer"
         >
-          {MOCK_USERS.map((u) => (
-            <option key={u.id} value={u.role}>
+          {users.map((u) => (
+            <option key={u.id} value={u.id}>
               {u.avatar} {u.name}
             </option>
           ))}
         </select>
 
         <div className="mt-2 flex items-center justify-between">
-          <span className="text-[11px] text-slate-400">{currentUser.title}</span>
-          <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold border ${ROLES_CONFIG[currentUser.role]?.badgeColor || ''}`}>
-            {currentUser.role.toUpperCase()}
+          <span className="text-[11px] text-slate-400 truncate max-w-[120px]">{currentUser.title}</span>
+          <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold border ${currentRole?.badgeColor || ''}`}>
+            {currentRole?.name.split(' ')[0] || 'ROLE'}
           </span>
         </div>
       </div>
@@ -113,7 +114,7 @@ export function Sidebar() {
           <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
           Supabase Connected
         </span>
-        <span className="text-[10px] bg-slate-800 px-1.5 py-0.5 rounded text-slate-300 font-mono">RBAC v1.0</span>
+        <span className="text-[10px] bg-slate-800 px-1.5 py-0.5 rounded text-slate-300 font-mono">RBAC Pro</span>
       </div>
     </aside>
   );

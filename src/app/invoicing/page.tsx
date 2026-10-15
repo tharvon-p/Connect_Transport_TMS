@@ -1175,46 +1175,69 @@ export default function InvoicingPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {/* Line 1: Main Transport */}
+                  {/* Line 1: Main Transport Charge */}
                   <tr className="align-top">
-                    <td className="border-r border-slate-800 p-2 text-center font-mono">{selectedJob?.job_date || invoiceForm.invoice_date}</td>
-                    <td className="border-r border-slate-800 p-2 font-mono font-bold">{invoiceForm.container_no}</td>
+                    <td className="border-r border-slate-800 p-2 text-center font-mono">
+                      {selectedJob?.job_date || invoiceForm.invoice_date}
+                    </td>
+                    <td className="border-r border-slate-800 p-2 font-mono font-bold">
+                      {invoiceForm.container_no}
+                    </td>
                     <td className="border-r border-slate-800 p-2 text-center font-mono font-bold">
                       {invoiceForm.container_type_20 > 0 ? `${invoiceForm.container_type_20} ` : ''}
                       {invoiceForm.container_type_40 > 0 ? ` ${invoiceForm.container_type_40}` : ''}
                     </td>
-                    <td className="border-r border-slate-800 p-2 space-y-0.5">
-                      <div className="font-bold text-slate-900">{invoiceForm.transport_description}</div>
-                      
-                      {/* Extra Items (Advance charges) */}
-                      {invoiceForm.extra_items.map((item) => (
-                        <div key={item.id} className="pt-0.5 font-bold text-slate-900 flex items-center justify-between">
-                          <span>{item.description}</span>
-                          {item.formula && (
-                            <span className="text-[10px] font-mono text-slate-400 font-normal">
-                              [ที่มา: {item.formula}]
-                            </span>
-                          )}
-                        </div>
-                      ))}
-
-                      {/* Consignee, Shipper, Booking, Route Notes */}
-                      <div className="text-[11px] text-slate-700 pt-1 font-semibold">{invoiceForm.consignee_shipper}</div>
-                      <div className="text-[11px] text-slate-700 font-semibold">{invoiceForm.booking_bl}</div>
-                      <div className="text-[11px] text-slate-700 font-mono font-semibold">{invoiceForm.route_note}</div>
+                    <td className="border-r border-slate-800 p-2 font-bold text-slate-900">
+                      {invoiceForm.transport_description}
                     </td>
-                    {/* Advance Column */}
-                    <td className="border-r border-slate-800 p-2 text-right font-mono font-bold">
-                      {totalAdvance > 0 ? totalAdvance.toLocaleString('en-US', { minimumFractionDigits: 2 }) : ''}
-                    </td>
+                    {/* Advance Column: Blank for main transport */}
+                    <td className="border-r border-slate-800 p-2 text-right font-mono font-bold"></td>
                     {/* Transport Column */}
                     <td className="p-2 text-right font-mono font-bold">
-                      {totalTransport.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                      {Number(invoiceForm.transport_amount || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
                     </td>
                   </tr>
 
+                  {/* Lines 2..N: Advance & Extra Items (Each item on its own row with amount aligned directly to its line) */}
+                  {invoiceForm.extra_items.map((item) => (
+                    <tr key={item.id} className="align-top">
+                      <td className="border-r border-slate-800 px-2 py-1"></td>
+                      <td className="border-r border-slate-800 px-2 py-1"></td>
+                      <td className="border-r border-slate-800 px-2 py-1"></td>
+                      <td className="border-r border-slate-800 px-2 py-1 font-bold text-slate-900">
+                        {item.description}
+                      </td>
+                      {/* Advance Column: Exactly aligned with this specific advance item */}
+                      <td className="border-r border-slate-800 px-2 py-1 text-right font-mono font-bold">
+                        {item.category === 'advance' && Number(item.amount) > 0
+                          ? Number(item.amount).toLocaleString('en-US', { minimumFractionDigits: 2 })
+                          : ''}
+                      </td>
+                      {/* Transport Column */}
+                      <td className="px-2 py-1 text-right font-mono font-bold">
+                        {item.category === 'transport' && Number(item.amount) > 0
+                          ? Number(item.amount).toLocaleString('en-US', { minimumFractionDigits: 2 })
+                          : ''}
+                      </td>
+                    </tr>
+                  ))}
+
+                  {/* Consignee, Shipper, Booking, Route Notes Line */}
+                  <tr className="align-top">
+                    <td className="border-r border-slate-800 px-2 pt-2"></td>
+                    <td className="border-r border-slate-800 px-2 pt-2"></td>
+                    <td className="border-r border-slate-800 px-2 pt-2"></td>
+                    <td className="border-r border-slate-800 px-2 pt-2 space-y-0.5">
+                      <div className="text-[11px] text-slate-700 font-semibold">{invoiceForm.consignee_shipper}</div>
+                      <div className="text-[11px] text-slate-700 font-semibold">{invoiceForm.booking_bl}</div>
+                      <div className="text-[11px] text-slate-700 font-mono font-semibold">{invoiceForm.route_note}</div>
+                    </td>
+                    <td className="border-r border-slate-800 px-2 pt-2"></td>
+                    <td className="px-2 pt-2"></td>
+                  </tr>
+
                   {/* Empty rows to maintain table height like original form */}
-                  <tr className="h-28 border-b border-slate-800">
+                  <tr className="h-20 border-b border-slate-800">
                     <td className="border-r border-slate-800"></td>
                     <td className="border-r border-slate-800"></td>
                     <td className="border-r border-slate-800"></td>

@@ -4,6 +4,8 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { Customer, Location, RateCard, Job, JobType, JobStatus, ContainerSize, ContainerType, CargoType, VehicleType } from '@/types/database';
+import { logActivity } from '@/lib/audit-logger';
+import { useAuth } from '@/lib/auth-context';
 import { 
   ClipboardList, 
   Plus, 
@@ -17,7 +19,14 @@ import {
   AlertCircle,
   FileText,
   DollarSign,
-  Sparkles
+  Sparkles,
+  Download,
+  Printer,
+  Ship,
+  Anchor,
+  ReceiptText,
+  Calendar,
+  Box
 } from 'lucide-react';
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -66,7 +75,41 @@ const statusConfig: Record<JobStatus, { label: string; badgeClass: string }> = {
   cancelled: { label: 'ยกเลิก', badgeClass: 'bg-rose-100 text-rose-800 border-rose-200' },
 };
 
+const COMMON_SHIPPING_LINES = [
+  'YML (Yang Ming)',
+  'OOCL',
+  'CMA CGM',
+  'Evergreen',
+  'ONE (Ocean Network Express)',
+  'Maersk',
+  'MSC',
+  'COSCO',
+  'Hapag-Lloyd',
+  'RCL',
+  'SITC',
+  'Wanhai'
+];
+
+// CSV Export Helper
+function exportToCsv(filename: string, headers: string[], rows: (string | number)[][]) {
+  const bom = '\uFEFF';
+  const csvContent = bom + [
+    headers.map(h => `"${String(h).replace(/"/g, '""')}"`).join(','),
+    ...rows.map(r => r.map(c => `"${String(c ?? '').replace(/"/g, '""')}"`).join(','))
+  ].join('\r\n');
+  
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.setAttribute('href', url);
+  link.setAttribute('download', `${filename}_${new Date().toISOString().slice(0, 10)}.csv`);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
 export default function OrdersPage() {
+  const { currentUser, currentRole } = useAuth();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [locations, setLocations] = useState<Location[]>([]);
@@ -86,18 +129,39 @@ export default function OrdersPage() {
     job_date: '',
     job_type: 'heavy_to_open' as JobType,
     customer_id: '',
+    shipper_name: '',
+    ship_line: 'Evergreen',
+    bl_no: '',
+    book_no: '',
+    commodity_name: '',
+
+    // Routes
+    pickup_place: '',
+    pickup_date: '',
+    packing_place: '',
+    packing_date: '',
+    return_place: '',
+    return_date: '',
+
     origin_id: '',
     destination_id: '',
     vehicle_type: 'trailer' as VehicleType,
     container_size: '40' as ContainerSize,
     container_type: 'HC' as ContainerType,
+    container_amount: '1',
     cargo_type: 'NON_DG' as CargoType,
     status: 'draft' as JobStatus,
-    revenue: '0',
+
+    // Pricing
+    price: '5500',
+    addon_price: '0',
+    revenue: '5500',
+
     pat_letter_required: false,
     notes: '',
   });
 
+  const [selectedRateCardId, setSelectedRateCardId] = useState<string>('');
   const [rateCardMatchNote, setRateCardMatchNote] = useState<string | null>(null);
 
   // Fetch all related data
@@ -118,7 +182,7 @@ export default function OrdersPage() {
           .order('job_date', { ascending: false }),
         supabase.from('customers').select('*').order('company_name'),
         supabase.from('locations').select('*').order('name'),
-        supabase.from('rate_cards').select('*'),
+        supabase.from('rate_cards').select('*, origin:locations!origin_id(*), destination:locations!destination_id(*)'),
       ]);
 
       if (jobsRes.data) setJobs(jobsRes.data as Job[]);
@@ -144,60 +208,139 @@ export default function OrdersPage() {
     return formatted;
   };
 
+  // Open Create Modal
   const handleOpenCreateModal = () => {
     const nextNo = generateNextJobNo();
+    const today = new Date().toISOString().split('T')[0];
+    const defaultCust = customers[0];
+    const defaultOrigin = locations[0]?.name || 'ลานตู้บึงทองคำ';
+    const defaultDest = locations[1]?.name || 'ท่าเรือคลองเตย (PAT)';
+
     setFormData({
       job_no: nextNo,
-      job_date: new Date().toISOString().split('T')[0],
+      job_date: today,
       job_type: 'heavy_to_open',
-      customer_id: customers[0]?.id || '',
+      customer_id: defaultCust?.id || '',
+      shipper_name: defaultCust?.shipper_name || '',
+      ship_line: 'Evergreen',
+      bl_no: '',
+      book_no: '',
+      commodity_name: defaultCust?.commodity_name || '',
+
+      pickup_place: defaultOrigin,
+      pickup_date: today,
+      packing_place: 'โรงงานลูกค้า',
+      packing_date: today,
+      return_place: defaultDest,
+      return_date: today,
+
       origin_id: locations[0]?.id || '',
       destination_id: locations[1]?.id || '',
       vehicle_type: 'trailer',
       container_size: '40',
       container_type: 'HC',
+      container_amount: '1',
       cargo_type: 'NON_DG',
       status: 'draft',
-      revenue: '7500',
-      pat_letter_required: false,
+
+      price: '5500',
+      addon_price: '0',
+      revenue: '5500',
+
+      pat_letter_required: defaultDest.includes('PAT') || defaultDest.includes('คลองเตย'),
       notes: '',
     });
+
+    setSelectedRateCardId('');
     setRateCardMatchNote(null);
     setOpenOrderModal(true);
   };
 
-  // Check rate card match automatically when origin, dest, or vehicle type changes
-  const checkRateCard = (originId: string, destId: string, vType: VehicleType) => {
-    const match = rateCards.find(
-      (r) => r.origin_id === originId && r.destination_id === destId && r.vehicle_type === vType
-    );
-    if (match) {
-      setFormData((prev) => ({ ...prev, revenue: String(match.base_price) }));
-      setRateCardMatchNote(`พบคู่เส้นทางใน Rate Card: ราคาแนะนำ ฿${Number(match.base_price).toLocaleString()}`);
-    } else {
-      setRateCardMatchNote(null);
+  // When Customer changes, auto-fill default shipper & commodity
+  const handleCustomerChange = (custId: string) => {
+    const cust = customers.find(c => c.id === custId);
+    setFormData(prev => ({
+      ...prev,
+      customer_id: custId,
+      shipper_name: cust?.shipper_name || prev.shipper_name,
+      commodity_name: cust?.commodity_name || prev.commodity_name,
+    }));
+  };
+
+  // When Return Place changes, auto check PAT checkbox if port is PAT / Klongtoey
+  const handleReturnPlaceChange = (placeName: string) => {
+    const isPat = placeName.toUpperCase().includes('PAT') || placeName.includes('คลองเตย');
+    setFormData(prev => ({
+      ...prev,
+      return_place: placeName,
+      pat_letter_required: isPat || prev.pat_letter_required,
+    }));
+  };
+
+  // Handle Rate Card selection
+  const handleApplyRateCard = (rateId: string) => {
+    setSelectedRateCardId(rateId);
+    if (!rateId) return;
+
+    const rate = rateCards.find(r => r.id === rateId);
+    if (rate) {
+      const basePrice = Number(rate.base_price || 0);
+      const addon = parseFloat(formData.addon_price) || 0;
+      const count = parseInt(formData.container_amount) || 1;
+      const totalRev = (basePrice + addon) * count;
+
+      setFormData(prev => ({
+        ...prev,
+        origin_id: rate.origin_id || prev.origin_id,
+        destination_id: rate.destination_id || prev.destination_id,
+        pickup_place: rate.origin?.name || prev.pickup_place,
+        return_place: rate.destination?.name || prev.return_place,
+        container_size: (rate.container_size as ContainerSize) || prev.container_size,
+        container_type: (rate.container_type as ContainerType) || prev.container_type,
+        vehicle_type: rate.vehicle_type || prev.vehicle_type,
+        price: String(basePrice),
+        revenue: String(totalRev),
+        pat_letter_required: (rate.destination?.name || '').includes('PAT') || (rate.destination?.name || '').includes('คลองเตย'),
+      }));
+
+      setRateCardMatchNote(`ใช้เรท: ${rate.origin?.name} ➔ ${rate.destination?.name} (ราคา ฿${basePrice.toLocaleString()} / ตู้)`);
     }
+  };
+
+  // Recalculate Revenue when price, addon_price, or container_amount changes
+  const handlePriceUpdate = (newPrice: string, newAddon: string, newAmount: string) => {
+    const p = parseFloat(newPrice) || 0;
+    const a = parseFloat(newAddon) || 0;
+    const c = parseInt(newAmount) || 1;
+    const total = (p + a) * c;
+    setFormData(prev => ({
+      ...prev,
+      price: newPrice,
+      addon_price: newAddon,
+      container_amount: newAmount,
+      revenue: String(total),
+    }));
   };
 
   // Submit new Order
   const handleCreateOrder = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.customer_id || !formData.origin_id || !formData.destination_id) {
-      alert('กรุณาเลือกข้อมูลลูกค้า ต้นทาง และปลายทางให้ครบถ้วน');
+    if (!formData.customer_id) {
+      alert('กรุณาเลือกลูกค้าผู้ว่าจ้าง');
       return;
     }
 
-    const price = parseFloat(formData.revenue) || 0;
+    const price = parseFloat(formData.price) || 0;
+    const addon = parseFloat(formData.addon_price) || 0;
+    const totalRev = parseFloat(formData.revenue) || (price + addon);
+    const amount = parseInt(formData.container_amount) || 1;
 
-    // Check estimated costs from rate card or sensible defaults
-    const match = rateCards.find(
-      (r) => r.origin_id === formData.origin_id && r.destination_id === formData.destination_id && r.vehicle_type === formData.vehicle_type
-    );
-    const fuelEst = match ? Number(match.fuel_cost_est) : price * 0.3;
-    const driverEst = match ? Number(match.driver_fee_est) : 600;
-    const tollEst = match ? Number(match.toll_fee_est) : 200;
+    // Check estimated costs
+    const fuelEst = price * 0.3 * amount;
+    const driverEst = 600 * amount;
+    const tollEst = 200 * amount;
     const totalCostEst = fuelEst + driverEst + tollEst;
-    const netProfitEst = price - totalCostEst;
+    const netProfitEst = totalRev - totalCostEst;
 
     const { error } = await supabase.from('jobs').insert([
       {
@@ -205,14 +348,31 @@ export default function OrdersPage() {
         job_date: formData.job_date,
         job_type: formData.job_type,
         customer_id: formData.customer_id,
-        origin_id: formData.origin_id,
-        destination_id: formData.destination_id,
+        shipper_name: formData.shipper_name || null,
+        ship_line: formData.ship_line || null,
+        bl_no: formData.bl_no || null,
+        book_no: formData.book_no || null,
+        commodity_name: formData.commodity_name || null,
+
+        pickup_place: formData.pickup_place || null,
+        pickup_date: formData.pickup_date || null,
+        packing_place: formData.packing_place || null,
+        packing_date: formData.packing_date || null,
+        return_place: formData.return_place || null,
+        return_date: formData.return_date || null,
+
+        origin_id: formData.origin_id || null,
+        destination_id: formData.destination_id || null,
         vehicle_type: formData.vehicle_type,
         container_size: formData.container_size,
         container_type: formData.container_type,
+        container_amount: amount,
         cargo_type: formData.cargo_type,
         status: formData.status,
-        revenue: price,
+
+        price: price,
+        addon_price: addon,
+        revenue: totalRev,
         fuel_cost: fuelEst,
         driver_allowance: driverEst,
         toll_fee: tollEst,
@@ -221,13 +381,23 @@ export default function OrdersPage() {
         other_cost: 0,
         total_cost: totalCostEst,
         net_profit: netProfitEst,
+
         pat_letter_required: formData.pat_letter_required,
         pat_letter_status: formData.pat_letter_required ? 'pending' : 'none',
+        invoice_no: null, // initially null until billed
         driver_notes: formData.notes,
       },
     ]);
 
     if (!error) {
+      logActivity({
+        user_id: currentUser?.id || 'sys',
+        user_name: currentUser?.name || 'User',
+        user_role: currentRole?.id || 'cs',
+        action: 'CREATE',
+        module: 'ORDERS',
+        description: `เปิดใบรับงานขนส่งใหม่: ${formData.job_no} (${amount}x${formData.container_size}' ${formData.container_type})`,
+      });
       setOpenOrderModal(false);
       fetchData();
     } else {
@@ -236,14 +406,53 @@ export default function OrdersPage() {
   };
 
   // Delete Order
-  const handleDeleteOrder = async (id: string) => {
-    if (!confirm('ยืนยันที่จะลบงานขนส่งนี้หรือไม่?')) return;
+  const handleDeleteOrder = async (id: string, jobNo: string) => {
+    if (!confirm(`ยืนยันที่จะลบงานขนส่ง "${jobNo}" หรือไม่?`)) return;
     const { error } = await supabase.from('jobs').delete().eq('id', id);
     if (!error) {
+      logActivity({
+        user_id: currentUser?.id || 'sys',
+        user_name: currentUser?.name || 'User',
+        user_role: currentRole?.id || 'admin',
+        action: 'DELETE',
+        module: 'ORDERS',
+        description: `ลบงานขนส่ง: ${jobNo}`,
+      });
       fetchData();
     } else {
       alert('เกิดข้อผิดพลาดในการลบ: ' + error.message);
     }
+  };
+
+  // Export CSV
+  const exportOrdersCsv = () => {
+    const headers = [
+      'Job ID', 'วันที่รับงาน', 'ประเภทงาน', 'ลูกค้า', 'สายเรือ', 'Booking No.', 'B/L No.', 'Shipper',
+      'Volume (สเปกตู้)', 'จำนวนตู้', 'จุดรับตู้', 'จุดบรรจุ', 'จุดคืนตู้', 'ราคาขนส่ง', 'อัตราเพิ่ม',
+      'รายได้รวม', 'สถานะงาน', 'Invoice No.', 'จดหมาย PAT'
+    ];
+    const rows = filteredJobs.map(j => [
+      j.job_no,
+      j.job_date,
+      jobTypeMap[j.job_type]?.label || j.job_type,
+      j.customer?.company_name || '-',
+      j.ship_line || '-',
+      j.book_no || '-',
+      j.bl_no || '-',
+      j.shipper_name || '-',
+      `${j.container_amount || 1}x${j.container_size}' ${j.container_type}`,
+      j.container_amount || 1,
+      j.pickup_place || j.origin?.name || '-',
+      j.packing_place || '-',
+      j.return_place || j.destination?.name || '-',
+      j.price || j.revenue,
+      j.addon_price || 0,
+      j.revenue,
+      statusConfig[j.status]?.label || j.status,
+      j.invoice_no || 'ยังไม่ออกบิล',
+      j.pat_letter_required ? 'ต้องทำ PAT' : '-'
+    ]);
+    exportToCsv('Job_Orders_Master', headers, rows);
   };
 
   // Filtered jobs
@@ -251,8 +460,10 @@ export default function OrdersPage() {
     const matchSearch =
       j.job_no.toLowerCase().includes(searchQuery.toLowerCase()) ||
       (j.customer?.company_name || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (j.origin?.name || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (j.destination?.name || '').toLowerCase().includes(searchQuery.toLowerCase());
+      (j.ship_line || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (j.book_no || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (j.pickup_place || j.origin?.name || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (j.return_place || j.destination?.name || '').toLowerCase().includes(searchQuery.toLowerCase());
 
     const matchStatus = statusFilter === 'all' || j.status === statusFilter;
     return matchSearch && matchStatus;
@@ -274,87 +485,78 @@ export default function OrdersPage() {
             ระบบรับงานขนส่ง (Order Management)
           </h1>
           <p className="text-slate-500 text-sm">
-            เปิดใบรับงานใหม่ กำหนดสเปกตู้คอนเทนเนอร์ (20&apos;, 40&apos;, 45&apos; / DC, HC) คำนวณราคาตาม Rate Card
+            เปิดใบรับงานใหม่ กำหนดสเปก Volume ตู้ (เช่น 2x20&apos; DC, 1x40&apos; HC), สายเรือ, Booking, อ้างอิง Rate Card และตรวจสอบ Invoice No.
           </p>
         </div>
 
         <div className="flex items-center gap-2 self-start md:self-auto">
-          <Button 
-            variant="outline" 
-            size="sm" 
-            onClick={fetchData} 
-            disabled={loading}
-            className="gap-2"
-          >
+          <Button variant="outline" size="sm" onClick={fetchData} disabled={loading} className="gap-2">
             <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
             รีเฟรช
           </Button>
-          <Button 
-            size="sm" 
-            onClick={handleOpenCreateModal}
-            className="gap-2 bg-blue-600 hover:bg-blue-700"
-          >
+          <Button variant="outline" size="sm" onClick={exportOrdersCsv} className="gap-1.5 text-xs">
+            <Download className="h-3.5 w-3.5" />
+            Export CSV
+          </Button>
+          <Button onClick={handleOpenCreateModal} className="bg-blue-600 hover:bg-blue-700 gap-2 shadow-sm">
             <Plus className="h-4 w-4" />
-            + รับงานขนส่งใหม่ (New Job Order)
+            เปิดงานใหม่ (New Job)
           </Button>
         </div>
       </div>
 
-      {/* Filters and Search Bar */}
+      {/* Main Table Card */}
       <Card className="border-slate-200 shadow-sm">
-        <CardContent className="p-4 flex flex-col sm:flex-row gap-3 items-center justify-between">
-          <div className="relative w-full sm:w-80">
-            <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
-            <Input
-              placeholder="ค้นหา Job ID, ลูกค้า, เส้นทาง..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-9 bg-white text-sm"
-            />
+        <CardHeader className="flex flex-col md:flex-row md:items-center justify-between pb-4 gap-4">
+          <div>
+            <CardTitle className="text-base font-bold">รายการคำสั่งงานขนส่งทั้งหมด ({filteredJobs.length})</CardTitle>
+            <CardDescription>
+              รายการงานนำเข้า/ส่งออก, สเปกตู้, เส้นทาง 3 จุด, ติดตามเลข Invoice No. และสถานะการเปลี่ยนใบเสร็จท่าเรือ PAT
+            </CardDescription>
           </div>
 
-          <div className="flex items-center gap-2 w-full sm:w-auto">
-            <Filter className="h-4 w-4 text-slate-500" />
+          <div className="flex items-center gap-2 w-full md:w-auto">
+            <div className="relative flex-1 md:w-64">
+              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" />
+              <Input
+                placeholder="ค้นหา Job ID, ลูกค้า, สายเรือ, ลานตู้..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="pl-8 h-9 text-xs"
+              />
+            </div>
+
             <select
-              className="border rounded-md px-3 py-2 text-sm bg-white border-slate-300"
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value)}
+              className="h-9 text-xs border rounded-md px-2.5 bg-white border-slate-300"
             >
-              <option value="all">ทุกสถานะงาน ({jobs.length})</option>
-              <option value="draft">ฉบับร่าง (Draft)</option>
-              <option value="assigned">มอบหมายแล้ว (Assigned)</option>
-              <option value="in_progress">กำลังดำเนินการ (In Progress)</option>
-              <option value="completed">เสร็จสิ้น (Completed)</option>
-              <option value="cancelled">ยกเลิก (Cancelled)</option>
+              <option value="all">ทุกสถานะงาน</option>
+              <option value="draft">ฉบับร่าง</option>
+              <option value="assigned">มอบหมายแล้ว</option>
+              <option value="in_progress">กำลังดำเนินการ</option>
+              <option value="completed">เสร็จสิ้น</option>
+              <option value="cancelled">ยกเลิก</option>
             </select>
           </div>
-        </CardContent>
-      </Card>
-
-      {/* Orders Table */}
-      <Card className="border-slate-200 shadow-sm">
-        <CardHeader className="flex flex-row items-center justify-between pb-2">
-          <div>
-            <CardTitle className="text-base font-bold">รายการงานขนส่งทั้งหมด ({filteredJobs.length})</CardTitle>
-            <CardDescription>แสดงงานที่เปิดรับในระบบเรียงตามวันที่ล่าสุด</CardDescription>
-          </div>
         </CardHeader>
+
         <CardContent>
           <div className="rounded-md border overflow-x-auto">
             <Table>
               <TableHeader>
-                <TableRow className="bg-slate-100/70">
-                  <TableHead className="font-semibold text-slate-800">Job ID</TableHead>
-                  <TableHead className="font-semibold text-slate-800">วันที่รับงาน</TableHead>
-                  <TableHead className="font-semibold text-slate-800">ประเภทงาน</TableHead>
-                  <TableHead className="font-semibold text-slate-800">ชื่อลูกค้า</TableHead>
-                  <TableHead className="font-semibold text-slate-800">เส้นทาง (ต้นทาง ➔ ปลายทาง)</TableHead>
-                  <TableHead className="font-semibold text-slate-800">สเปกตู้</TableHead>
-                  <TableHead className="font-semibold text-slate-800">ประเภทรถ</TableHead>
-                  <TableHead className="font-semibold text-slate-800">สถานะ</TableHead>
-                  <TableHead className="font-semibold text-slate-800">จดหมายท่าเรือ (PAT)</TableHead>
-                  <TableHead className="text-right font-semibold text-slate-800">ราคาเรียกเก็บ</TableHead>
-                  <TableHead className="text-right font-semibold text-slate-800">จัดการ</TableHead>
+                <TableRow className="bg-slate-100/70 text-xs">
+                  <TableHead className="font-bold text-blue-900">Job ID</TableHead>
+                  <TableHead className="font-bold">วันที่วิ่งงาน</TableHead>
+                  <TableHead className="font-bold">ลูกค้า / สายเรือ</TableHead>
+                  <TableHead>Booking / B/L No.</TableHead>
+                  <TableHead className="font-bold">เส้นทาง 3 จุด (รับตู้ ➔ บรรจุ ➔ คืนตู้)</TableHead>
+                  <TableHead className="font-bold text-center">Volume / สเปก</TableHead>
+                  <TableHead className="text-center font-bold text-purple-900">Invoice No.</TableHead>
+                  <TableHead>สถานะงาน</TableHead>
+                  <TableHead>จดหมายท่าเรือ (PAT)</TableHead>
+                  <TableHead className="text-right font-bold text-emerald-800">ราคาเรียกเก็บ</TableHead>
+                  <TableHead className="text-right">จัดการ</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -365,70 +567,89 @@ export default function OrdersPage() {
                     </TableCell>
                   </TableRow>
                 ) : (
-                  filteredJobs.map((j) => (
-                    <TableRow key={j.id} className="hover:bg-slate-50/80">
-                      <TableCell className="font-bold text-blue-700 whitespace-nowrap">
-                        {j.job_no}
-                      </TableCell>
-                      <TableCell className="text-xs text-slate-600 whitespace-nowrap">
-                        {j.job_date}
-                      </TableCell>
-                      <TableCell className="text-xs font-medium">
-                        <span className="px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200">
-                          {jobTypeMap[j.job_type]?.label || j.job_type}
-                        </span>
-                      </TableCell>
-                      <TableCell className="font-semibold text-slate-900 max-w-[160px] truncate">
-                        {j.customer?.company_name || 'ลูกค้าทั่วไป'}
-                      </TableCell>
-                      <TableCell className="text-xs text-slate-700">
-                        <span className="font-medium text-slate-900">{j.origin?.name || '-'}</span>
-                        <span className="mx-1 text-slate-400">➔</span>
-                        <span>{j.destination?.name || '-'}</span>
-                      </TableCell>
-                      <TableCell>
-                        <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-slate-100 font-mono text-slate-800 border">
-                          {j.container_size}&apos; {j.container_type}
-                          {j.cargo_type === 'DG' && (
-                            <span className="text-rose-600 font-bold" title="Dangerous Goods">⚠️ DG</span>
+                  filteredJobs.map((j) => {
+                    const volumeStr = `${j.container_amount || 1}x${j.container_size || '40'}' ${j.container_type || 'HC'}`;
+                    return (
+                      <TableRow key={j.id} className="hover:bg-slate-50/80 text-xs">
+                        <TableCell className="font-bold text-blue-700 whitespace-nowrap font-mono">
+                          {j.job_no}
+                        </TableCell>
+                        <TableCell className="text-slate-600 whitespace-nowrap">
+                          {j.job_date}
+                        </TableCell>
+                        <TableCell className="max-w-[170px]">
+                          <div className="font-bold text-slate-900 truncate">{j.customer?.company_name || 'ลูกค้าทั่วไป'}</div>
+                          {j.ship_line && (
+                            <div className="text-[11px] text-blue-700 flex items-center gap-1 font-medium">
+                              <Ship className="h-3 w-3 shrink-0" /> {j.ship_line}
+                            </div>
                           )}
-                        </span>
-                      </TableCell>
-                      <TableCell className="text-xs text-slate-600">
-                        {vehicleTypeMap[j.vehicle_type] || j.vehicle_type}
-                      </TableCell>
-                      <TableCell>
-                        <Badge 
-                          variant="outline" 
-                          className={`font-medium ${statusConfig[j.status]?.badgeClass || ''}`}
-                        >
-                          {statusConfig[j.status]?.label || j.status}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-xs">
-                        {j.pat_letter_required ? (
-                          <Badge variant="outline" className="bg-purple-50 text-purple-700 border-purple-200">
-                            ต้องทำ PAT
+                        </TableCell>
+                        <TableCell className="font-mono text-[11px]">
+                          <div><span className="text-slate-400">BK:</span> {j.book_no || '-'}</div>
+                          {j.bl_no && <div><span className="text-slate-400">BL:</span> {j.bl_no}</div>}
+                        </TableCell>
+                        <TableCell className="max-w-[220px]">
+                          <div className="text-[11px] text-slate-700 truncate">
+                            <span className="text-slate-500">รับ:</span> {j.pickup_place || j.origin?.name || '-'}
+                          </div>
+                          <div className="text-[11px] text-slate-700 truncate">
+                            <span className="text-slate-500">บรรจุ:</span> {j.packing_place || '-'}
+                          </div>
+                          <div className="text-[11px] text-slate-900 font-semibold truncate">
+                            <span className="text-blue-600">คืน:</span> {j.return_place || j.destination?.name || '-'}
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-center whitespace-nowrap">
+                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-slate-100 font-mono font-bold text-slate-900 border text-xs">
+                            <Box className="h-3 w-3 text-blue-600" />
+                            {volumeStr}
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-center whitespace-nowrap">
+                          {j.invoice_no ? (
+                            <Badge variant="outline" className="font-mono font-bold text-blue-800 bg-blue-50 border-blue-200">
+                              <ReceiptText className="h-3 w-3 mr-1" />
+                              {j.invoice_no}
+                            </Badge>
+                          ) : (
+                            <span className="text-[11px] text-slate-400 italic">ยังไม่ออกบิล</span>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          <Badge 
+                            variant="outline" 
+                            className={`font-medium ${statusConfig[j.status]?.badgeClass || ''}`}
+                          >
+                            {statusConfig[j.status]?.label || j.status}
                           </Badge>
-                        ) : (
-                          <span className="text-slate-400">-</span>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-right font-bold text-emerald-700">
-                        ฿{Number(j.revenue).toLocaleString()}
-                      </TableCell>
-                      <TableCell className="text-right whitespace-nowrap">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => handleDeleteOrder(j.id)}
-                          className="text-red-500 hover:text-red-700 hover:bg-red-50 h-8 w-8"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  ))
+                        </TableCell>
+                        <TableCell>
+                          {j.pat_letter_required ? (
+                            <Badge variant="outline" className="bg-purple-50 text-purple-700 border-purple-200">
+                              <Anchor className="h-3 w-3 mr-1" />
+                              ต้องทำ PAT
+                            </Badge>
+                          ) : (
+                            <span className="text-slate-400">-</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-right font-bold text-emerald-700 whitespace-nowrap">
+                          ฿{Number(j.revenue || 0).toLocaleString()}
+                        </TableCell>
+                        <TableCell className="text-right whitespace-nowrap">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => handleDeleteOrder(j.id, j.job_no)}
+                            className="text-slate-400 hover:text-red-700 hover:bg-red-50 h-8 w-8"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })
                 )}
               </TableBody>
             </Table>
@@ -438,7 +659,7 @@ export default function OrdersPage() {
 
       {/* ================= MODAL: CREATE NEW ORDER ================= */}
       <Dialog open={openOrderModal} onOpenChange={setOpenOrderModal}>
-        <DialogContent className="sm:max-w-[650px] max-h-[90vh] overflow-y-auto">
+        <DialogContent className="sm:max-w-[720px] max-h-[90vh] overflow-y-auto">
           <form onSubmit={handleCreateOrder}>
             <DialogHeader>
               <DialogTitle className="text-xl flex items-center gap-2">
@@ -446,232 +667,324 @@ export default function OrdersPage() {
                 เปิดใบรับงานขนส่งใหม่ (New Job Order)
               </DialogTitle>
               <DialogDescription>
-                กรอกข้อมูลรับงานขนส่งตู้คอนเทนเนอร์ ระบบจะแนะนำราคาอัตโนมัติตามเส้นทาง
+                กรอกข้อมูลรับงาน, สเปก Volume ตู้, สายเรือ, และเส้นทาง 3 จุด หรือเลือกจาก Rate Card เพื่อดึงราคาอัตโนมัติ
               </DialogDescription>
             </DialogHeader>
 
-            <div className="space-y-4 py-4 text-sm">
-              {/* Row 1: Job ID & Date */}
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <Label htmlFor="job_no">Job ID (สร้างอัตโนมัติ)</Label>
-                  <Input 
-                    id="job_no" 
-                    value={formData.job_no} 
-                    readOnly 
-                    className="bg-slate-100 font-bold text-blue-700 cursor-not-allowed"
+            <div className="space-y-4 py-4 text-xs">
+              {/* Quick Rate Card Select */}
+              <div className="p-3 bg-blue-50/70 rounded-lg border border-blue-200 space-y-1.5">
+                <div className="flex items-center justify-between font-bold text-blue-900">
+                  <span className="flex items-center gap-1.5">
+                    <Sparkles className="h-4 w-4 text-blue-600" />
+                    อ้างอิง Rate Card ราคามาตรฐาน (ถ้ามี):
+                  </span>
+                  <span className="text-[11px] text-blue-600 font-normal">ดึงเส้นทาง สเปกตู้ และราคาให้อัตโนมัติ</span>
+                </div>
+                <select
+                  className="w-full border rounded-md px-3 py-1.5 text-xs bg-white border-blue-300 font-medium"
+                  value={selectedRateCardId}
+                  onChange={(e) => handleApplyRateCard(e.target.value)}
+                >
+                  <option value="">-- ไม่ใช้อ้างอิง Rate Card (ป้อนข้อมูลเองทั้งหมด) --</option>
+                  {rateCards.map(r => (
+                    <option key={r.id} value={r.id}>
+                      {r.origin?.name} ➔ {r.destination?.name} ({r.container_size}&apos; {r.container_type}) - ฿{Number(r.base_price).toLocaleString()}
+                    </option>
+                  ))}
+                </select>
+                {rateCardMatchNote && (
+                  <p className="text-[11px] text-emerald-700 font-semibold">{rateCardMatchNote}</p>
+                )}
+              </div>
+
+              {/* 1. Job Meta */}
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <Label className="text-xs font-bold text-blue-900">Job ID (อัตโนมัติ) *</Label>
+                  <Input
+                    required
+                    value={formData.job_no}
+                    onChange={(e) => setFormData({ ...formData, job_no: e.target.value })}
+                    className="font-mono font-bold bg-slate-50"
                   />
                 </div>
-                <div className="space-y-1">
-                  <Label htmlFor="job_date">วันที่รับงาน (Job Date) *</Label>
-                  <Input 
-                    id="job_date" 
-                    type="date"
+                <div>
+                  <Label className="text-xs font-bold">วันที่รับงาน / วิ่งงาน *</Label>
+                  <Input
                     required
-                    value={formData.job_date} 
+                    type="date"
+                    value={formData.job_date}
                     onChange={(e) => setFormData({ ...formData, job_date: e.target.value })}
                   />
                 </div>
-              </div>
-
-              {/* Row 2: Customer & Job Type */}
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <Label htmlFor="customer_id">ชื่อลูกค้า (Customer) *</Label>
+                <div>
+                  <Label className="text-xs font-bold">ประเภทงาน *</Label>
                   <select
-                    id="customer_id"
-                    required
-                    className="w-full border rounded-md p-2 text-sm bg-white border-slate-300"
-                    value={formData.customer_id}
-                    onChange={(e) => setFormData({ ...formData, customer_id: e.target.value })}
-                  >
-                    <option value="">-- เลือกลูกค้า --</option>
-                    {customers.map((c) => (
-                      <option key={c.id} value={c.id}>{c.company_name}</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="job_type">ประเภทงาน (Job Type) *</Label>
-                  <select
-                    id="job_type"
-                    required
-                    className="w-full border rounded-md p-2 text-sm bg-white border-slate-300"
+                    className="w-full border rounded-md px-3 py-2 text-xs bg-white"
                     value={formData.job_type}
                     onChange={(e) => setFormData({ ...formData, job_type: e.target.value as JobType })}
                   >
-                    <option value="heavy_to_open">1. ลากตู้หนักไปเปิด (Heavy to Open)</option>
-                    <option value="empty_to_stuff">2. ลากตู้เปล่าไปบรรจุ (Empty to Stuff)</option>
-                    <option value="empty_return">3. ลากตู้เปล่าคืน (Empty Return)</option>
-                    <option value="yard_move">4. ย้ายลาน (Yard Move)</option>
+                    <option value="heavy_to_open">ลากตู้หนักไปเปิด (Import)</option>
+                    <option value="empty_to_stuff">ลากตู้เปล่าไปบรรจุ (Export)</option>
+                    <option value="empty_return">ลากตู้เปล่าคืน</option>
+                    <option value="yard_move">ย้ายลาน</option>
                   </select>
                 </div>
               </div>
 
-              {/* Row 3: Route (Origin -> Destination) */}
-              <div className="grid grid-cols-2 gap-3 p-3 bg-slate-100/70 rounded-lg border border-slate-200">
-                <div className="space-y-1">
-                  <Label htmlFor="origin_id">ต้นทาง (Origin - รับของ/ตู้) *</Label>
+              {/* 2. Customer & Shipping Line */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label className="text-xs font-bold">ลูกค้าผู้ว่าจ้าง *</Label>
                   <select
-                    id="origin_id"
                     required
-                    className="w-full border rounded-md p-2 text-sm bg-white border-slate-300"
-                    value={formData.origin_id}
-                    onChange={(e) => {
-                      const newOrigin = e.target.value;
-                      setFormData({ ...formData, origin_id: newOrigin });
-                      checkRateCard(newOrigin, formData.destination_id, formData.vehicle_type);
-                    }}
+                    className="w-full border rounded-md px-3 py-2 text-xs bg-white font-medium"
+                    value={formData.customer_id}
+                    onChange={(e) => handleCustomerChange(e.target.value)}
                   >
-                    <option value="">-- เลือกสถานที่ต้นทาง --</option>
-                    {locations.map((loc) => (
-                      <option key={loc.id} value={loc.id}>{loc.name} ({loc.province})</option>
+                    <option value="">-- เลือกลูกค้า --</option>
+                    {customers.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.company_name} ({c.branch || 'สำนักงานใหญ่'})
+                      </option>
                     ))}
                   </select>
                 </div>
-                <div className="space-y-1">
-                  <Label htmlFor="destination_id">ปลายทาง (Destination - ส่งของ/ตู้) *</Label>
-                  <select
-                    id="destination_id"
-                    required
-                    className="w-full border rounded-md p-2 text-sm bg-white border-slate-300"
-                    value={formData.destination_id}
-                    onChange={(e) => {
-                      const newDest = e.target.value;
-                      setFormData({ ...formData, destination_id: newDest });
-                      checkRateCard(formData.origin_id, newDest, formData.vehicle_type);
-                    }}
-                  >
-                    <option value="">-- เลือกสถานที่ปลายทาง --</option>
-                    {locations.map((loc) => (
-                      <option key={loc.id} value={loc.id}>{loc.name} ({loc.province})</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              {/* Row 4: Vehicle Type */}
-              <div className="space-y-1">
-                <Label htmlFor="vehicle_type">ประเภทรถที่ต้องการ (Vehicle Type) *</Label>
-                <select
-                  id="vehicle_type"
-                  required
-                  className="w-full border rounded-md p-2 text-sm bg-white border-slate-300"
-                  value={formData.vehicle_type}
-                  onChange={(e) => {
-                    const newVType = e.target.value as VehicleType;
-                    setFormData({ ...formData, vehicle_type: newVType });
-                    checkRateCard(formData.origin_id, formData.destination_id, newVType);
-                  }}
-                >
-                  <option value="trailer">รถเทรลเลอร์ (หัวลาก)</option>
-                  <option value="semi_trailer">รถกึ่งพ่วง (Semi-Trailer)</option>
-                  <option value="10_wheel">รถ 10 ล้อ</option>
-                  <option value="6_wheel">รถ 6 ล้อ</option>
-                  <option value="4_wheel">รถ 4 ล้อ</option>
-                </select>
-              </div>
-
-              {/* Row 5: Container Specifications */}
-              <div className="p-3 bg-blue-50/50 rounded-lg border border-blue-200 space-y-2">
-                <div className="font-semibold text-blue-900 text-xs uppercase tracking-wide">
-                  สเปกตู้คอนเทนเนอร์ (Container Specification)
-                </div>
-                <div className="grid grid-cols-3 gap-3">
-                  <div className="space-y-1">
-                    <Label htmlFor="c_size">ขนาด (Size)</Label>
-                    <select
-                      id="c_size"
-                      className="w-full border rounded-md p-2 text-sm bg-white border-slate-300"
-                      value={formData.container_size}
-                      onChange={(e) => setFormData({ ...formData, container_size: e.target.value as ContainerSize })}
-                    >
-                      <option value="20">20 ฟุต (20&apos;)</option>
-                      <option value="40">40 ฟุต (40&apos;)</option>
-                      <option value="45">45 ฟุต (45&apos;)</option>
-                    </select>
-                  </div>
-                  <div className="space-y-1">
-                    <Label htmlFor="c_type">ชนิดตู้ (Type)</Label>
-                    <select
-                      id="c_type"
-                      className="w-full border rounded-md p-2 text-sm bg-white border-slate-300"
-                      value={formData.container_type}
-                      onChange={(e) => setFormData({ ...formData, container_type: e.target.value as ContainerType })}
-                    >
-                      <option value="DC">DC (Dry Container ตู้แห้ง)</option>
-                      <option value="HC">HC (High Cube ตู้สูง)</option>
-                      <option value="OT">OT (Open Top ตู้เปิดหลังคา)</option>
-                      <option value="RH">RH (Reefer HC ตู้เย็น)</option>
-                    </select>
-                  </div>
-                  <div className="space-y-1">
-                    <Label htmlFor="cargo_type">ชนิดสินค้า (Cargo)</Label>
-                    <select
-                      id="cargo_type"
-                      className="w-full border rounded-md p-2 text-sm bg-white border-slate-300"
-                      value={formData.cargo_type}
-                      onChange={(e) => setFormData({ ...formData, cargo_type: e.target.value as CargoType })}
-                    >
-                      <option value="NON_DG">Non-DG (สินค้าทั่วไป)</option>
-                      <option value="DG">DG (สินค้าอันตราย ⚠️)</option>
-                    </select>
-                  </div>
-                </div>
-              </div>
-
-              {/* Row 6: Pricing and Rate Card Auto-Suggestion */}
-              <div className="grid grid-cols-2 gap-3 items-end">
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between">
-                    <Label htmlFor="revenue">ราคาค่าขนส่งเรียกเก็บ (บาท) *</Label>
-                    {rateCardMatchNote && (
-                      <span className="text-[11px] text-emerald-600 font-medium flex items-center gap-1">
-                        <Sparkles className="h-3 w-3" /> Rate Card Auto
-                      </span>
-                    )}
-                  </div>
-                  <Input 
-                    id="revenue" 
-                    type="number"
-                    required
-                    value={formData.revenue} 
-                    onChange={(e) => setFormData({ ...formData, revenue: e.target.value })}
-                    className="font-bold text-emerald-700 text-base"
+                <div>
+                  <Label className="text-xs font-bold">สายเรือ (Shipping Line)</Label>
+                  <input
+                    list="shipping-lines-list"
+                    className="w-full border rounded-md px-3 py-2 text-xs bg-white"
+                    placeholder="เช่น Evergreen, YML, OOCL, CMA CGM"
+                    value={formData.ship_line}
+                    onChange={(e) => setFormData({ ...formData, ship_line: e.target.value })}
                   />
-                  {rateCardMatchNote && (
-                    <p className="text-[11px] text-emerald-600 mt-0.5">{rateCardMatchNote}</p>
-                  )}
+                  <datalist id="shipping-lines-list">
+                    {COMMON_SHIPPING_LINES.map(line => (
+                      <option key={line} value={line} />
+                    ))}
+                  </datalist>
+                </div>
+              </div>
+
+              {/* 3. B/L, Booking, Shipper, Commodity */}
+              <div className="grid grid-cols-4 gap-3">
+                <div>
+                  <Label className="text-xs">เลขที่ Booking (สายเรือ)</Label>
+                  <Input
+                    placeholder="เช่น 256674749"
+                    value={formData.book_no}
+                    onChange={(e) => setFormData({ ...formData, book_no: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">เลขที่ B/L</Label>
+                  <Input
+                    placeholder="เช่น NOSNB25BK22851"
+                    value={formData.bl_no}
+                    onChange={(e) => setFormData({ ...formData, bl_no: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">ชื่อ Shipper บน B/L</Label>
+                  <Input
+                    placeholder="ELECTRICAL COMPONENTS CO."
+                    value={formData.shipper_name}
+                    onChange={(e) => setFormData({ ...formData, shipper_name: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">ชื่อสินค้า (Commodity)</Label>
+                  <Input
+                    placeholder="ชิ้นส่วนอิเล็กทรอนิกส์"
+                    value={formData.commodity_name}
+                    onChange={(e) => setFormData({ ...formData, commodity_name: e.target.value })}
+                  />
+                </div>
+              </div>
+
+              {/* 4. Three Route Points (Pickup ➔ Packing ➔ Return) */}
+              <div className="border rounded-lg p-3 bg-slate-50/60 space-y-3">
+                <div className="font-bold text-slate-800 flex items-center gap-1.5">
+                  <Calendar className="h-4 w-4 text-blue-600" />
+                  กำหนดการเดินทางและเส้นทาง 3 จุด:
                 </div>
 
-                <div className="space-y-1">
-                  <Label htmlFor="status">สถานะเริ่มต้น</Label>
+                <div className="grid grid-cols-3 gap-3">
+                  {/* Point 1: Pickup */}
+                  <div className="p-2.5 bg-white rounded border space-y-1.5">
+                    <div className="font-bold text-blue-900">1. สถานที่รับตู้ (Pickup)</div>
+                    <Input
+                      placeholder="เช่น ลานตู้บึงทองคำ"
+                      value={formData.pickup_place}
+                      onChange={(e) => setFormData({ ...formData, pickup_place: e.target.value })}
+                    />
+                    <div>
+                      <span className="text-[10px] text-slate-500">วันที่รับตู้:</span>
+                      <Input
+                        type="date"
+                        value={formData.pickup_date}
+                        onChange={(e) => setFormData({ ...formData, pickup_date: e.target.value })}
+                        className="h-8"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Point 2: Packing */}
+                  <div className="p-2.5 bg-white rounded border space-y-1.5">
+                    <div className="font-bold text-slate-900">2. สถานที่บรรจุสินค้า</div>
+                    <Input
+                      placeholder="เช่น โรงงาน KRC นวนคร"
+                      value={formData.packing_place}
+                      onChange={(e) => setFormData({ ...formData, packing_place: e.target.value })}
+                    />
+                    <div>
+                      <span className="text-[10px] text-slate-500">วันที่บรรจุ:</span>
+                      <Input
+                        type="date"
+                        value={formData.packing_date}
+                        onChange={(e) => setFormData({ ...formData, packing_date: e.target.value })}
+                        className="h-8"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Point 3: Return */}
+                  <div className="p-2.5 bg-white rounded border space-y-1.5">
+                    <div className="font-bold text-blue-900">3. สถานที่คืนตู้ (Return)</div>
+                    <Input
+                      placeholder="เช่น ท่าเรือคลองเตย (PAT)"
+                      value={formData.return_place}
+                      onChange={(e) => handleReturnPlaceChange(e.target.value)}
+                    />
+                    <div>
+                      <span className="text-[10px] text-slate-500">วันที่คืนตู้:</span>
+                      <Input
+                        type="date"
+                        value={formData.return_date}
+                        onChange={(e) => setFormData({ ...formData, return_date: e.target.value })}
+                        className="h-8"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* 5. Volume & Container Specs */}
+              <div className="grid grid-cols-4 gap-3">
+                <div>
+                  <Label className="text-xs font-bold">ขนาดตู้</Label>
                   <select
-                    id="status"
-                    className="w-full border rounded-md p-2 text-sm bg-white border-slate-300"
-                    value={formData.status}
-                    onChange={(e) => setFormData({ ...formData, status: e.target.value as JobStatus })}
+                    className="w-full border rounded-md px-3 py-2 text-xs bg-white font-medium"
+                    value={formData.container_size}
+                    onChange={(e) => setFormData({ ...formData, container_size: e.target.value as ContainerSize })}
                   >
-                    <option value="draft">ฉบับร่าง (Draft)</option>
-                    <option value="assigned">มอบหมายแล้ว (Assigned)</option>
-                    <option value="in_progress">กำลังดำเนินการ (In Progress)</option>
-                    <option value="completed">เสร็จสิ้น (Completed)</option>
+                    <option value="20">20 ฟุต</option>
+                    <option value="40">40 ฟุต</option>
+                    <option value="45">45 ฟุต</option>
+                  </select>
+                </div>
+
+                <div>
+                  <Label className="text-xs font-bold">ชนิดตู้</Label>
+                  <select
+                    className="w-full border rounded-md px-3 py-2 text-xs bg-white font-medium"
+                    value={formData.container_type}
+                    onChange={(e) => setFormData({ ...formData, container_type: e.target.value as ContainerType })}
+                  >
+                    <option value="DC">DC (แห้งทั่วไป)</option>
+                    <option value="HC">HC (ทรงสูง High Cube)</option>
+                    <option value="OT">OT (เปิดหลังคา Open Top)</option>
+                    <option value="RH">RH (ตู้เย็น Reefer)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <Label className="text-xs font-bold text-blue-900">จำนวนตู้ (Volume)</Label>
+                  <Input
+                    type="number"
+                    min="1"
+                    value={formData.container_amount}
+                    onChange={(e) => handlePriceUpdate(formData.price, formData.addon_price, e.target.value)}
+                    className="font-bold text-center"
+                  />
+                </div>
+
+                <div>
+                  <Label className="text-xs">ชนิดสินค้า</Label>
+                  <select
+                    className="w-full border rounded-md px-3 py-2 text-xs bg-white"
+                    value={formData.cargo_type}
+                    onChange={(e) => setFormData({ ...formData, cargo_type: e.target.value as CargoType })}
+                  >
+                    <option value="NON_DG">ทั่วไป (Non-DG)</option>
+                    <option value="DG">สินค้าอันตราย (DG)</option>
                   </select>
                 </div>
               </div>
 
-              {/* Row 7: Special Documents & Notes */}
-              <div className="flex items-center gap-2 p-2.5 rounded-lg border bg-slate-50">
-                <input
-                  type="checkbox"
-                  id="pat"
-                  checked={formData.pat_letter_required}
-                  onChange={(e) => setFormData({ ...formData, pat_letter_required: e.target.checked })}
-                  className="h-4 w-4 rounded border-slate-300 text-blue-600"
-                />
-                <Label htmlFor="pat" className="text-xs font-medium text-slate-800 cursor-pointer">
-                  ต้องทำ <strong>&ldquo;จดหมายเปลี่ยนใบเสร็จท่าเรือ (PAT Letter)&rdquo;</strong> สำหรับงานนี้
-                </Label>
+              {/* Volume preview badge */}
+              <div className="flex items-center gap-2">
+                <span className="text-slate-500 text-[11px]">สเปกและปริมาณงาน (Volume):</span>
+                <span className="px-2.5 py-0.5 rounded bg-blue-100 text-blue-800 font-mono font-bold text-xs border border-blue-200">
+                  {formData.container_amount}x{formData.container_size}&apos; {formData.container_type}
+                </span>
+                {parseInt(formData.container_amount) > 1 && (
+                  <span className="text-[11px] text-amber-700 italic">
+                    * 1 Job หลายตู้: จะสามารถจ่ายรถหลายคันแยกตามตู้ได้ในหน้า Dispatch
+                  </span>
+                )}
+              </div>
+
+              {/* 6. Pricing & Addon */}
+              <div className="grid grid-cols-3 gap-3 border-t pt-3">
+                <div>
+                  <Label className="text-xs font-bold">ราคาค่าขนส่งต่อตู้ (บาท)</Label>
+                  <Input
+                    type="number"
+                    value={formData.price}
+                    onChange={(e) => handlePriceUpdate(e.target.value, formData.addon_price, formData.container_amount)}
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">อัตราเพิ่มต่อตู้ (เช่น ค่าน้ำมันขึ้น)</Label>
+                  <Input
+                    type="number"
+                    value={formData.addon_price}
+                    onChange={(e) => handlePriceUpdate(formData.price, e.target.value, formData.container_amount)}
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs font-bold text-emerald-800">ราคารวมเรียกเก็บลูกค้า (บาท) *</Label>
+                  <Input
+                    required
+                    type="number"
+                    value={formData.revenue}
+                    onChange={(e) => setFormData({ ...formData, revenue: e.target.value })}
+                    className="font-bold text-emerald-700 text-sm"
+                  />
+                </div>
+              </div>
+
+              {/* 7. PAT Checkbox Auto-check */}
+              <div className="pt-2 border-t">
+                <label className="flex items-center gap-2 cursor-pointer p-2.5 rounded-lg border bg-purple-50/50 hover:bg-purple-50">
+                  <input
+                    type="checkbox"
+                    checked={formData.pat_letter_required}
+                    onChange={(e) => setFormData({ ...formData, pat_letter_required: e.target.checked })}
+                    className="h-4 w-4 rounded text-purple-600 focus:ring-purple-500"
+                  />
+                  <div>
+                    <span className="font-semibold text-purple-900 text-xs">
+                      ทำจดหมายขอเปลี่ยนใบเสร็จการท่าเรือแห่งประเทศไทย (PAT Letter)
+                    </span>
+                    <p className="text-[11px] text-purple-700">
+                      ระบบจะสร้างเอกสารขอใบกำกับภาษีถึงการท่าเรือฯ ในนามบริษัทลูกค้าให้อัตโนมัติในโมดูล Invoicing
+                    </p>
+                  </div>
+                </label>
               </div>
             </div>
 
@@ -681,7 +994,7 @@ export default function OrdersPage() {
               </Button>
               <Button type="submit" className="bg-blue-600 hover:bg-blue-700 gap-2">
                 <CheckCircle2 className="h-4 w-4" />
-                บันทึกใบรับงาน
+                บันทึกคำสั่งงานขนส่ง
               </Button>
             </DialogFooter>
           </form>

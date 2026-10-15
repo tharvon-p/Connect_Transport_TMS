@@ -223,34 +223,65 @@ function DriverPortalContent() {
     });
   }, [myJobs, statusFilter, dateFilter, todayStr, tomorrowStr]);
 
+  // Helper to load job draft from localStorage if available
+  const loadJobDraft = (job: Job) => {
+    let savedDraft: any = null;
+    if (typeof window !== 'undefined') {
+      try {
+        const raw = localStorage.getItem(`connect_job_draft_${job.id}`);
+        if (raw) savedDraft = JSON.parse(raw);
+      } catch (e) {
+        console.error('Error reading draft:', e);
+      }
+    }
+
+    return {
+      container_no: savedDraft?.container_no || job.container_no || '',
+      seal_no: savedDraft?.seal_no || job.seal_no || '',
+      temperature: savedDraft?.temperature || (job.temperature !== null ? String(job.temperature) : ''),
+      checkin_pickup: savedDraft?.checkin_pickup || (job.checkin_location?.includes('รับตู้') ? job.checkin_location : ''),
+      checkin_packing: savedDraft?.checkin_packing || (job.checkin_location?.includes('บรรจุ') ? job.checkin_location : ''),
+      checkin_return: savedDraft?.checkin_return || (job.checkin_location?.includes('คืนตู้') ? job.checkin_location : ''),
+      driver_notes: savedDraft?.driver_notes || job.driver_notes || '',
+      photo_front: savedDraft?.photo_front || '',
+      photo_floor: savedDraft?.photo_floor || '',
+      photo_left: savedDraft?.photo_left || '',
+      photo_right: savedDraft?.photo_right || '',
+      photo_back: savedDraft?.photo_back || '',
+      photo_reefer_drain: savedDraft?.photo_reefer_drain || '',
+      photo_reefer_cable: savedDraft?.photo_reefer_cable || '',
+      photo_reefer_temp: savedDraft?.photo_reefer_temp || '',
+      photo_pickup_receipt: savedDraft?.photo_pickup_receipt || '',
+      photo_pickup_eir: savedDraft?.photo_pickup_eir || '',
+      photo_sealed: savedDraft?.photo_sealed || '',
+      photo_packing_temp: savedDraft?.photo_packing_temp || '',
+      photo_packing_receipt: savedDraft?.photo_packing_receipt || '',
+      photo_return_front: savedDraft?.photo_return_front || '',
+      photo_return_receipt: savedDraft?.photo_return_receipt || '',
+      photo_return_eir: savedDraft?.photo_return_eir || '',
+    };
+  };
+
+  // Helper to persist form to localStorage
+  const updateDriverForm = (updates: Partial<typeof driverForm>) => {
+    setDriverForm(prev => {
+      const next = { ...prev, ...updates };
+      if (activeJob && typeof window !== 'undefined') {
+        try {
+          localStorage.setItem(`connect_job_draft_${activeJob.id}`, JSON.stringify(next));
+        } catch (e) {
+          // ignore localStorage quota limit if photos are high res
+        }
+      }
+      return next;
+    });
+  };
+
   // Select job to work on
   const handleSelectJob = (job: Job) => {
     setActiveJob(job);
-    setDriverForm({
-      container_no: job.container_no || '',
-      seal_no: job.seal_no || '',
-      temperature: job.temperature !== null ? String(job.temperature) : '',
-      checkin_pickup: job.checkin_location?.includes('รับตู้') ? job.checkin_location : '',
-      checkin_packing: job.checkin_location?.includes('บรรจุ') ? job.checkin_location : '',
-      checkin_return: job.checkin_location?.includes('คืนตู้') ? job.checkin_location : '',
-      driver_notes: job.driver_notes || '',
-      photo_front: '',
-      photo_floor: '',
-      photo_left: '',
-      photo_right: '',
-      photo_back: '',
-      photo_reefer_drain: '',
-      photo_reefer_cable: '',
-      photo_reefer_temp: '',
-      photo_pickup_receipt: '',
-      photo_pickup_eir: '',
-      photo_sealed: '',
-      photo_packing_temp: '',
-      photo_packing_receipt: '',
-      photo_return_front: '',
-      photo_return_receipt: '',
-      photo_return_eir: '',
-    });
+    const initial = loadJobDraft(job);
+    setDriverForm(initial);
 
     if (job.status === 'completed') {
       setCurrentStep('step3');
@@ -308,6 +339,12 @@ function DriverPortalContent() {
       ? (activeJob?.packing_place || 'โรงงานลูกค้า')
       : (activeJob?.return_place || activeJob?.destination?.name || 'ท่าเรือคืนตู้');
 
+    const updateCheckin = (text: string) => {
+      if (point === 'pickup') updateDriverForm({ checkin_pickup: text });
+      else if (point === 'packing') updateDriverForm({ checkin_packing: text });
+      else updateDriverForm({ checkin_return: text });
+    };
+
     // Attempt GPS geolocation
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
@@ -315,25 +352,18 @@ function DriverPortalContent() {
           const lat = pos.coords.latitude.toFixed(4);
           const lng = pos.coords.longitude.toFixed(4);
           const checkinText = `📍 ถึง ${locationName} เวลา ${timeStr} (${dateStr}) [GPS: ${lat}, ${lng}]`;
-
-          if (point === 'pickup') setDriverForm(prev => ({ ...prev, checkin_pickup: checkinText }));
-          else if (point === 'packing') setDriverForm(prev => ({ ...prev, checkin_packing: checkinText }));
-          else setDriverForm(prev => ({ ...prev, checkin_return: checkinText }));
+          updateCheckin(checkinText);
         },
         () => {
           // Fallback if GPS permission denied
           const checkinText = `📍 ถึง ${locationName} เวลา ${timeStr} (${dateStr})`;
-          if (point === 'pickup') setDriverForm(prev => ({ ...prev, checkin_pickup: checkinText }));
-          else if (point === 'packing') setDriverForm(prev => ({ ...prev, checkin_packing: checkinText }));
-          else setDriverForm(prev => ({ ...prev, checkin_return: checkinText }));
+          updateCheckin(checkinText);
         },
         { timeout: 6000 }
       );
     } else {
       const checkinText = `📍 ถึง ${locationName} เวลา ${timeStr} (${dateStr})`;
-      if (point === 'pickup') setDriverForm(prev => ({ ...prev, checkin_pickup: checkinText }));
-      else if (point === 'packing') setDriverForm(prev => ({ ...prev, checkin_packing: checkinText }));
-      else setDriverForm(prev => ({ ...prev, checkin_return: checkinText }));
+      updateCheckin(checkinText);
     }
   };
 
@@ -345,7 +375,7 @@ function DriverPortalContent() {
     const reader = new FileReader();
     reader.onload = () => {
       const base64Url = reader.result as string;
-      setDriverForm(prev => ({ ...prev, [photoKey]: base64Url }));
+      updateDriverForm({ [photoKey]: base64Url });
     };
     reader.readAsDataURL(file);
   };
@@ -357,9 +387,122 @@ function DriverPortalContent() {
     window.open(url, '_blank');
   };
 
-  // Save Progress to Supabase
+  const isReefer = activeJob?.container_type === 'RH' || (activeJob?.container_type as string) === 'RF' || activeJob?.container_type === 'Reefer';
+
+  // =========================================================================
+  // STRICT STEP VALIDATION CHECKLISTS (Enforces Check-in + Photos before next step)
+  // =========================================================================
+  const step1Checklist = useMemo(() => {
+    const checkinOk = Boolean(driverForm.checkin_pickup && driverForm.checkin_pickup.trim());
+    const containerNoOk = Boolean(driverForm.container_no && driverForm.container_no.trim());
+
+    const photos = [
+      { key: 'photo_front', label: '1. หน้าตู้', done: Boolean(driverForm.photo_front) },
+      { key: 'photo_floor', label: '2. พื้นตู้ภายใน', done: Boolean(driverForm.photo_floor) },
+      { key: 'photo_left', label: '3. ซ้ายตู้', done: Boolean(driverForm.photo_left) },
+      { key: 'photo_right', label: '4. ขวาตู้', done: Boolean(driverForm.photo_right) },
+      { key: 'photo_back', label: '5. หลังตู้ (ประตู)', done: Boolean(driverForm.photo_back) },
+    ];
+    const photosDoneCount = photos.filter(p => p.done).length;
+    const standardPhotosOk = photosDoneCount === 5;
+
+    const reeferPhotos = [
+      { key: 'photo_reefer_drain', label: '1. รูน้ำทิ้ง 4 ด้าน', done: Boolean(driverForm.photo_reefer_drain) },
+      { key: 'photo_reefer_cable', label: '2. สายไฟตู้เย็น', done: Boolean(driverForm.photo_reefer_cable) },
+      { key: 'photo_reefer_temp', label: '3. หน้าจออุณหภูมิ', done: Boolean(driverForm.photo_reefer_temp) },
+    ];
+    const reeferPhotosDoneCount = reeferPhotos.filter(p => p.done).length;
+    const reeferPhotosOk = !isReefer || reeferPhotosDoneCount === 3;
+
+    // Check if step 1 has passed previously (e.g. job in_progress/completed in DB) or is currently met
+    const isPreviouslyPassed = activeJob?.status === 'in_progress' || activeJob?.status === 'completed';
+    const isCurrentlyComplete = checkinOk && containerNoOk && standardPhotosOk && reeferPhotosOk;
+    const isStep1Passed = isPreviouslyPassed || isCurrentlyComplete;
+
+    const missingItems: string[] = [];
+    if (!checkinOk) missingItems.push('กดปุ่มเช็คอินจุดรับตู้ (บันทึกเวลา + พิกัด GPS)');
+    if (!standardPhotosOk) missingItems.push(`ถ่ายรูปตรวจสภาพตู้ 5 รูปให้ครบทุกมุม (ปัจจุบันถ่ายแล้ว ${photosDoneCount}/5 มุม)`);
+    if (isReefer && !reeferPhotosOk) missingItems.push(`ถ่ายรูปตรวจตู้เย็น 3 รูปให้ครบ (ปัจจุบันถ่ายแล้ว ${reeferPhotosDoneCount}/3 รูป)`);
+    if (!containerNoOk) missingItems.push('กรอกหมายเลขตู้คอนเทนเนอร์ (Container No.)');
+
+    return {
+      checkinOk,
+      containerNoOk,
+      photos,
+      photosDoneCount,
+      standardPhotosOk,
+      reeferPhotos,
+      reeferPhotosDoneCount,
+      reeferPhotosOk,
+      isCurrentlyComplete,
+      isStep1Passed,
+      missingItems,
+    };
+  }, [driverForm, isReefer, activeJob]);
+
+  const step2Checklist = useMemo(() => {
+    const checkinOk = Boolean(driverForm.checkin_packing && driverForm.checkin_packing.trim());
+    const photoSealedOk = Boolean(driverForm.photo_sealed);
+    const sealNoOk = Boolean(driverForm.seal_no && driverForm.seal_no.trim());
+
+    const isPreviouslyPassed = activeJob?.status === 'completed';
+    const isCurrentlyComplete = checkinOk && photoSealedOk && sealNoOk;
+    const isStep2Passed = isPreviouslyPassed || isCurrentlyComplete;
+
+    const missingItems: string[] = [];
+    if (!checkinOk) missingItems.push('กดปุ่มเช็คอินจุดบรรจุสินค้า (บันทึกเวลา + พิกัด GPS)');
+    if (!photoSealedOk) missingItems.push('ถ่ายรูปหน้าตู้ที่ล็อคซีล (Seal) เรียบร้อยแล้ว');
+    if (!sealNoOk) missingItems.push('ยืนยันหมายเลขซีลที่ล็อค (Seal No.)');
+
+    return {
+      checkinOk,
+      photoSealedOk,
+      sealNoOk,
+      isCurrentlyComplete,
+      isStep2Passed,
+      missingItems,
+    };
+  }, [driverForm, activeJob]);
+
+  const step3Checklist = useMemo(() => {
+    const checkinOk = Boolean(driverForm.checkin_return && driverForm.checkin_return.trim());
+    const photoReturnOk = Boolean(driverForm.photo_return_front);
+
+    const isCurrentlyComplete = checkinOk && photoReturnOk;
+
+    const missingItems: string[] = [];
+    if (!checkinOk) missingItems.push('กดปุ่มเช็คอินจุดคืนตู้ (บันทึกเวลา + พิกัด GPS)');
+    if (!photoReturnOk) missingItems.push('ถ่ายรูปหน้าตู้ส่งคืนที่ลาน/ท่าเรือ');
+
+    return {
+      checkinOk,
+      photoReturnOk,
+      isCurrentlyComplete,
+      missingItems,
+    };
+  }, [driverForm]);
+
+  // Save Progress to Supabase (With Strict Step Verification)
   const handleSaveProgress = async (isCompleting: boolean = false) => {
     if (!activeJob) return;
+
+    // Check step requirements before saving & progressing
+    if (!isCompleting) {
+      if (currentStep === 'step1' && !step1Checklist.isStep1Passed) {
+        alert('⚠️ ยังไม่สามารถออกเดินทางไปจุดที่ 2 ได้ครับ\nกรุณาดำเนินการในจุดที่ 1 ให้ครบถ้วนก่อน:\n\n• ' + step1Checklist.missingItems.join('\n• '));
+        return;
+      }
+      if (currentStep === 'step2' && !step2Checklist.isStep2Passed) {
+        alert('⚠️ ยังไม่สามารถออกเดินทางไปจุดที่ 3 ได้ครับ\nกรุณาดำเนินการในจุดที่ 2 ให้ครบถ้วนก่อน:\n\n• ' + step2Checklist.missingItems.join('\n• '));
+        return;
+      }
+    } else {
+      if (!step3Checklist.isCurrentlyComplete) {
+        alert('⚠️ ยังไม่สามารถปิดงานและส่งมอบตู้ได้ครับ\nกรุณาดำเนินการในจุดที่ 3 ให้ครบถ้วนก่อน:\n\n• ' + step3Checklist.missingItems.join('\n• '));
+        return;
+      }
+    }
+
     setIsSaving(true);
 
     try {
@@ -401,6 +544,9 @@ function DriverPortalContent() {
       await fetchData();
 
       if (isCompleting) {
+        if (typeof window !== 'undefined') {
+          localStorage.removeItem(`connect_job_draft_${activeJob.id}`);
+        }
         alert('🎉 จบงานและส่งมอบตู้สำเร็จเรียบร้อยครับ! ขอบคุณสำหรับความปลอดภัยในการขับขี่');
         setActiveJob(null);
       } else {
@@ -414,8 +560,6 @@ function DriverPortalContent() {
       setIsSaving(false);
     }
   };
-
-  const isReefer = activeJob?.container_type === 'RH' || (activeJob?.container_type as string) === 'RF' || activeJob?.container_type === 'Reefer';
 
   // =========================================================================
   // VIEW 1: DRIVER LOGIN / PROFILE SELECTION (If not logged in on device)
@@ -595,39 +739,81 @@ function DriverPortalContent() {
             <button
               type="button"
               onClick={() => setCurrentStep('step1')}
-              className={`py-3 rounded-xl text-sm md:text-base transition-all flex flex-col items-center justify-center gap-0.5 ${
+              className={`py-2.5 rounded-xl text-sm md:text-base transition-all flex flex-col items-center justify-center gap-0.5 ${
                 currentStep === 'step1'
                   ? 'bg-blue-600 text-white shadow-md'
                   : 'text-slate-700 hover:bg-slate-300'
               }`}
             >
-              <span className="text-xs opacity-80">จุดที่ 1</span>
+              <span className="text-[11px] opacity-90 flex items-center gap-1 font-bold">
+                {step1Checklist.isStep1Passed ? '✓ ผ่านแล้ว' : 'จุดที่ 1'}
+              </span>
               <span>1. รับตู้</span>
             </button>
 
             <button
               type="button"
-              onClick={() => setCurrentStep('step2')}
-              className={`py-3 rounded-xl text-sm md:text-base transition-all flex flex-col items-center justify-center gap-0.5 ${
+              onClick={() => {
+                if (!step1Checklist.isStep1Passed) {
+                  alert('⚠️ ยังไม่สามารถไปจุดที่ 2 ได้ครับ\nกรุณาเช็คอินและถ่ายรูปตรวจสภาพตู้ที่จุดที่ 1 ให้ครบถ้วนก่อน:\n\n• ' + step1Checklist.missingItems.join('\n• '));
+                  return;
+                }
+                setCurrentStep('step2');
+              }}
+              className={`py-2.5 rounded-xl text-sm md:text-base transition-all flex flex-col items-center justify-center gap-0.5 ${
                 currentStep === 'step2'
                   ? 'bg-amber-600 text-white shadow-md'
+                  : !step1Checklist.isStep1Passed
+                  ? 'text-slate-400 cursor-not-allowed opacity-75'
                   : 'text-slate-700 hover:bg-slate-300'
               }`}
             >
-              <span className="text-xs opacity-80">จุดที่ 2</span>
+              <span className="text-[11px] opacity-90 flex items-center gap-1 font-bold">
+                {!step1Checklist.isStep1Passed ? (
+                  <>
+                    <Lock className="h-3 w-3" /> ล็อค
+                  </>
+                ) : step2Checklist.isStep2Passed ? (
+                  '✓ ผ่านแล้ว'
+                ) : (
+                  'จุดที่ 2'
+                )}
+              </span>
               <span>2. บรรจุ</span>
             </button>
 
             <button
               type="button"
-              onClick={() => setCurrentStep('step3')}
-              className={`py-3 rounded-xl text-sm md:text-base transition-all flex flex-col items-center justify-center gap-0.5 ${
+              onClick={() => {
+                if (!step1Checklist.isStep1Passed) {
+                  alert('⚠️ กรุณาดำเนินการจุดที่ 1 (รับตู้) ให้ครบถ้วนก่อนครับ');
+                  return;
+                }
+                if (!step2Checklist.isStep2Passed) {
+                  alert('⚠️ ยังไม่สามารถไปจุดที่ 3 ได้ครับ\nกรุณาเช็คอินและถ่ายรูปตู้ล็อคซีลที่จุดที่ 2 ให้ครบถ้วนก่อน:\n\n• ' + step2Checklist.missingItems.join('\n• '));
+                  return;
+                }
+                setCurrentStep('step3');
+              }}
+              className={`py-2.5 rounded-xl text-sm md:text-base transition-all flex flex-col items-center justify-center gap-0.5 ${
                 currentStep === 'step3'
                   ? 'bg-emerald-600 text-white shadow-md'
+                  : !step2Checklist.isStep2Passed
+                  ? 'text-slate-400 cursor-not-allowed opacity-75'
                   : 'text-slate-700 hover:bg-slate-300'
               }`}
             >
-              <span className="text-xs opacity-80">จุดที่ 3</span>
+              <span className="text-[11px] opacity-90 flex items-center gap-1 font-bold">
+                {!step2Checklist.isStep2Passed ? (
+                  <>
+                    <Lock className="h-3 w-3" /> ล็อค
+                  </>
+                ) : step3Checklist.isCurrentlyComplete ? (
+                  '✓ ผ่านแล้ว'
+                ) : (
+                  'จุดที่ 3'
+                )}
+              </span>
               <span>3. คืนตู้</span>
             </button>
           </div>
@@ -860,7 +1046,7 @@ function DriverPortalContent() {
                   <Input
                     placeholder="เช่น MRKU0670006"
                     value={driverForm.container_no}
-                    onChange={(e) => setDriverForm({ ...driverForm, container_no: e.target.value.toUpperCase() })}
+                    onChange={(e) => updateDriverForm({ container_no: e.target.value.toUpperCase() })}
                     className="h-12 text-base font-mono font-black uppercase rounded-xl border-2 border-slate-300"
                   />
                 </div>
@@ -871,9 +1057,70 @@ function DriverPortalContent() {
                   <Input
                     placeholder="เช่น SN-998124"
                     value={driverForm.seal_no}
-                    onChange={(e) => setDriverForm({ ...driverForm, seal_no: e.target.value.toUpperCase() })}
+                    onChange={(e) => updateDriverForm({ seal_no: e.target.value.toUpperCase() })}
                     className="h-12 text-base font-mono font-black uppercase rounded-xl border-2 border-slate-300"
                   />
+                </div>
+              </div>
+
+              {/* Step 1 Mandatory Pre-departure Checklist Card */}
+              <div className={`p-4 rounded-2xl border-2 space-y-2.5 transition-all ${
+                step1Checklist.isCurrentlyComplete 
+                  ? 'bg-emerald-50 border-emerald-400 shadow-xs' 
+                  : 'bg-rose-50/80 border-rose-300'
+              }`}>
+                <div className="flex items-center justify-between pb-1 border-b border-slate-200/60">
+                  <div className="flex items-center gap-1.5 font-black text-sm text-slate-900">
+                    <ShieldCheck className={`h-5 w-5 ${step1Checklist.isCurrentlyComplete ? 'text-emerald-600' : 'text-rose-600'}`} />
+                    <span>เงื่อนไขก่อนออกเดินทาง (จุดที่ 1):</span>
+                  </div>
+                  <Badge className={step1Checklist.isCurrentlyComplete ? 'bg-emerald-600 text-white font-bold text-xs' : 'bg-rose-600 text-white font-bold text-xs'}>
+                    {step1Checklist.isCurrentlyComplete ? '✓ ครบถ้วนพร้อมเดินทาง' : `ขาดอีก ${step1Checklist.missingItems.length} ข้อ`}
+                  </Badge>
+                </div>
+
+                <div className="space-y-1.5 text-xs md:text-sm font-bold">
+                  {/* Checkin status */}
+                  <div className={`flex items-center gap-2 p-2 rounded-xl ${step1Checklist.checkinOk ? 'bg-white text-emerald-800' : 'bg-white/90 text-rose-800'}`}>
+                    {step1Checklist.checkinOk ? (
+                      <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+                    ) : (
+                      <AlertTriangle className="h-4 w-4 text-rose-600 shrink-0" />
+                    )}
+                    <span>{step1Checklist.checkinOk ? 'เช็คอินจุดรับตู้เรียบร้อย (มีเวลา + พิกัด GPS)' : 'ยังไม่ได้กดเช็คอินจุดรับตู้ (กรุณากดปุ่มด้านบน)'}</span>
+                  </div>
+
+                  {/* 5 Photos status */}
+                  <div className={`flex items-center gap-2 p-2 rounded-xl ${step1Checklist.standardPhotosOk ? 'bg-white text-emerald-800' : 'bg-white/90 text-rose-800'}`}>
+                    {step1Checklist.standardPhotosOk ? (
+                      <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+                    ) : (
+                      <AlertTriangle className="h-4 w-4 text-rose-600 shrink-0" />
+                    )}
+                    <span>{step1Checklist.standardPhotosOk ? 'ถ่ายรูปตรวจสภาพตู้ครบ 5 มุม' : `ถ่ายรูปตรวจตู้แล้ว ${step1Checklist.photosDoneCount}/5 มุม (ขาดอีก ${5 - step1Checklist.photosDoneCount} มุม)`}</span>
+                  </div>
+
+                  {/* Reefer photos status */}
+                  {isReefer && (
+                    <div className={`flex items-center gap-2 p-2 rounded-xl ${step1Checklist.reeferPhotosOk ? 'bg-white text-emerald-800' : 'bg-white/90 text-rose-800'}`}>
+                      {step1Checklist.reeferPhotosOk ? (
+                        <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+                      ) : (
+                        <AlertTriangle className="h-4 w-4 text-rose-600 shrink-0" />
+                      )}
+                      <span>{step1Checklist.reeferPhotosOk ? 'ถ่ายรูปตรวจตู้เย็นครบ 3 รูป' : `ถ่ายรูปตู้เย็นแล้ว ${step1Checklist.reeferPhotosDoneCount}/3 รูป (ขาดอีก ${3 - step1Checklist.reeferPhotosDoneCount} รูป)`}</span>
+                    </div>
+                  )}
+
+                  {/* Container No status */}
+                  <div className={`flex items-center gap-2 p-2 rounded-xl ${step1Checklist.containerNoOk ? 'bg-white text-emerald-800' : 'bg-white/90 text-rose-800'}`}>
+                    {step1Checklist.containerNoOk ? (
+                      <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+                    ) : (
+                      <AlertTriangle className="h-4 w-4 text-rose-600 shrink-0" />
+                    )}
+                    <span>{step1Checklist.containerNoOk ? `ระบุหมายเลขตู้แล้ว: ${driverForm.container_no}` : 'ยังไม่ได้ระบุหมายเลขตู้คอนเทนเนอร์'}</span>
+                  </div>
                 </div>
               </div>
 
@@ -882,10 +1129,23 @@ function DriverPortalContent() {
                 type="button"
                 disabled={isSaving}
                 onClick={() => handleSaveProgress(false)}
-                className="w-full bg-slate-900 hover:bg-slate-800 text-white font-black h-14 text-base md:text-lg rounded-2xl shadow-lg gap-2"
+                className={`w-full font-black h-14 text-base md:text-lg rounded-2xl shadow-lg gap-2 transition-all ${
+                  step1Checklist.isStep1Passed 
+                    ? 'bg-emerald-600 hover:bg-emerald-700 text-white' 
+                    : 'bg-slate-400 hover:bg-slate-500 text-white'
+                }`}
               >
-                <CheckCircle2 className="h-6 w-6 text-emerald-400" />
-                บันทึกจุดที่ 1 &amp; ออกเดินทางไปจุดบรรจุสินค้า ➔
+                {step1Checklist.isStep1Passed ? (
+                  <>
+                    <CheckCircle2 className="h-6 w-6 text-white" />
+                    บันทึกจุดที่ 1 &amp; ออกเดินทางไปจุดบรรจุสินค้า ➔
+                  </>
+                ) : (
+                  <>
+                    <Lock className="h-5 w-5 text-white/80" />
+                    บันทึกจุดที่ 1 (รอทำครบ {step1Checklist.missingItems.length} ข้อ)
+                  </>
+                )}
               </Button>
             </div>
           )}
@@ -1030,9 +1290,58 @@ function DriverPortalContent() {
                   <Input
                     placeholder="เช่น SN-998124"
                     value={driverForm.seal_no}
-                    onChange={(e) => setDriverForm({ ...driverForm, seal_no: e.target.value.toUpperCase() })}
+                    onChange={(e) => updateDriverForm({ seal_no: e.target.value.toUpperCase() })}
                     className="h-12 text-base font-mono font-black uppercase rounded-xl border-2 border-slate-300"
                   />
+                </div>
+              </div>
+
+              {/* Step 2 Mandatory Pre-departure Checklist Card */}
+              <div className={`p-4 rounded-2xl border-2 space-y-2.5 transition-all ${
+                step2Checklist.isCurrentlyComplete 
+                  ? 'bg-emerald-50 border-emerald-400 shadow-xs' 
+                  : 'bg-rose-50/80 border-rose-300'
+              }`}>
+                <div className="flex items-center justify-between pb-1 border-b border-slate-200/60">
+                  <div className="flex items-center gap-1.5 font-black text-sm text-slate-900">
+                    <ShieldCheck className={`h-5 w-5 ${step2Checklist.isCurrentlyComplete ? 'text-emerald-600' : 'text-rose-600'}`} />
+                    <span>เงื่อนไขก่อนออกเดินทาง (จุดที่ 2):</span>
+                  </div>
+                  <Badge className={step2Checklist.isCurrentlyComplete ? 'bg-emerald-600 text-white font-bold text-xs' : 'bg-rose-600 text-white font-bold text-xs'}>
+                    {step2Checklist.isCurrentlyComplete ? '✓ ครบถ้วนพร้อมเดินทาง' : `ขาดอีก ${step2Checklist.missingItems.length} ข้อ`}
+                  </Badge>
+                </div>
+
+                <div className="space-y-1.5 text-xs md:text-sm font-bold">
+                  {/* Checkin status */}
+                  <div className={`flex items-center gap-2 p-2 rounded-xl ${step2Checklist.checkinOk ? 'bg-white text-emerald-800' : 'bg-white/90 text-rose-800'}`}>
+                    {step2Checklist.checkinOk ? (
+                      <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+                    ) : (
+                      <AlertTriangle className="h-4 w-4 text-rose-600 shrink-0" />
+                    )}
+                    <span>{step2Checklist.checkinOk ? 'เช็คอินจุดบรรจุสินค้าเรียบร้อย (มีเวลา + พิกัด GPS)' : 'ยังไม่ได้กดเช็คอินจุดบรรจุสินค้า (กรุณากดปุ่มด้านบน)'}</span>
+                  </div>
+
+                  {/* Photo sealed status */}
+                  <div className={`flex items-center gap-2 p-2 rounded-xl ${step2Checklist.photoSealedOk ? 'bg-white text-emerald-800' : 'bg-white/90 text-rose-800'}`}>
+                    {step2Checklist.photoSealedOk ? (
+                      <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+                    ) : (
+                      <AlertTriangle className="h-4 w-4 text-rose-600 shrink-0" />
+                    )}
+                    <span>{step2Checklist.photoSealedOk ? 'ถ่ายรูปหน้าตู้ที่ล็อคซีลเรียบร้อย' : 'ยังไม่ได้ถ่ายรูปหน้าตู้ที่ล็อคซีล'}</span>
+                  </div>
+
+                  {/* Seal No status */}
+                  <div className={`flex items-center gap-2 p-2 rounded-xl ${step2Checklist.sealNoOk ? 'bg-white text-emerald-800' : 'bg-white/90 text-rose-800'}`}>
+                    {step2Checklist.sealNoOk ? (
+                      <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+                    ) : (
+                      <AlertTriangle className="h-4 w-4 text-rose-600 shrink-0" />
+                    )}
+                    <span>{step2Checklist.sealNoOk ? `ยืนยันหมายเลขซีลแล้ว: ${driverForm.seal_no}` : 'ยังไม่ได้ระบุหมายเลขซีล'}</span>
+                  </div>
                 </div>
               </div>
 
@@ -1041,10 +1350,23 @@ function DriverPortalContent() {
                 type="button"
                 disabled={isSaving}
                 onClick={() => handleSaveProgress(false)}
-                className="w-full bg-slate-900 hover:bg-slate-800 text-white font-black h-14 text-base md:text-lg rounded-2xl shadow-lg gap-2"
+                className={`w-full font-black h-14 text-base md:text-lg rounded-2xl shadow-lg gap-2 transition-all ${
+                  step2Checklist.isStep2Passed 
+                    ? 'bg-emerald-600 hover:bg-emerald-700 text-white' 
+                    : 'bg-slate-400 hover:bg-slate-500 text-white'
+                }`}
               >
-                <CheckCircle2 className="h-6 w-6 text-emerald-400" />
-                บันทึกจุดที่ 2 &amp; ออกเดินทางไปคืนตู้ที่ท่าเรือ ➔
+                {step2Checklist.isStep2Passed ? (
+                  <>
+                    <CheckCircle2 className="h-6 w-6 text-white" />
+                    บันทึกจุดที่ 2 &amp; ออกเดินทางไปคืนตู้ที่ท่าเรือ ➔
+                  </>
+                ) : (
+                  <>
+                    <Lock className="h-5 w-5 text-white/80" />
+                    บันทึกจุดที่ 2 (รอทำครบ {step2Checklist.missingItems.length} ข้อ)
+                  </>
+                )}
               </Button>
             </div>
           )}
@@ -1150,9 +1472,48 @@ function DriverPortalContent() {
                   <Input
                     placeholder="เช่น ส่งคืนตู้เรียบร้อย ไม่มีรอยขูดขีด..."
                     value={driverForm.driver_notes}
-                    onChange={(e) => setDriverForm({ ...driverForm, driver_notes: e.target.value })}
+                    onChange={(e) => updateDriverForm({ driver_notes: e.target.value })}
                     className="h-12 text-sm rounded-xl border-slate-300"
                   />
+                </div>
+              </div>
+
+              {/* Step 3 Mandatory Pre-completion Checklist Card */}
+              <div className={`p-4 rounded-2xl border-2 space-y-2.5 transition-all ${
+                step3Checklist.isCurrentlyComplete 
+                  ? 'bg-emerald-50 border-emerald-400 shadow-xs' 
+                  : 'bg-rose-50/80 border-rose-300'
+              }`}>
+                <div className="flex items-center justify-between pb-1 border-b border-slate-200/60">
+                  <div className="flex items-center gap-1.5 font-black text-sm text-slate-900">
+                    <ShieldCheck className={`h-5 w-5 ${step3Checklist.isCurrentlyComplete ? 'text-emerald-600' : 'text-rose-600'}`} />
+                    <span>เงื่อนไขก่อนจบงานและส่งมอบตู้ (จุดที่ 3):</span>
+                  </div>
+                  <Badge className={step3Checklist.isCurrentlyComplete ? 'bg-emerald-600 text-white font-bold text-xs' : 'bg-rose-600 text-white font-bold text-xs'}>
+                    {step3Checklist.isCurrentlyComplete ? '✓ ครบถ้วนพร้อมจบงาน' : `ขาดอีก ${step3Checklist.missingItems.length} ข้อ`}
+                  </Badge>
+                </div>
+
+                <div className="space-y-1.5 text-xs md:text-sm font-bold">
+                  {/* Checkin status */}
+                  <div className={`flex items-center gap-2 p-2 rounded-xl ${step3Checklist.checkinOk ? 'bg-white text-emerald-800' : 'bg-white/90 text-rose-800'}`}>
+                    {step3Checklist.checkinOk ? (
+                      <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+                    ) : (
+                      <AlertTriangle className="h-4 w-4 text-rose-600 shrink-0" />
+                    )}
+                    <span>{step3Checklist.checkinOk ? 'เช็คอินจุดคืนตู้เรียบร้อย (มีเวลา + พิกัด GPS)' : 'ยังไม่ได้กดเช็คอินจุดคืนตู้ (กรุณากดปุ่มด้านบน)'}</span>
+                  </div>
+
+                  {/* Photo return status */}
+                  <div className={`flex items-center gap-2 p-2 rounded-xl ${step3Checklist.photoReturnOk ? 'bg-white text-emerald-800' : 'bg-white/90 text-rose-800'}`}>
+                    {step3Checklist.photoReturnOk ? (
+                      <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+                    ) : (
+                      <AlertTriangle className="h-4 w-4 text-rose-600 shrink-0" />
+                    )}
+                    <span>{step3Checklist.photoReturnOk ? 'ถ่ายรูปหน้าตู้ส่งคืนที่ลาน/ท่าเรือเรียบร้อย' : 'ยังไม่ได้ถ่ายรูปหน้าตู้ส่งคืนที่ลาน/ท่าเรือ'}</span>
+                  </div>
                 </div>
               </div>
 
@@ -1161,10 +1522,23 @@ function DriverPortalContent() {
                 type="button"
                 disabled={isSaving}
                 onClick={() => handleSaveProgress(true)}
-                className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-black h-16 text-lg md:text-xl rounded-2xl shadow-xl gap-2 mt-4"
+                className={`w-full font-black h-16 text-lg md:text-xl rounded-2xl shadow-xl gap-2 mt-4 transition-all ${
+                  step3Checklist.isCurrentlyComplete 
+                    ? 'bg-emerald-600 hover:bg-emerald-700 text-white' 
+                    : 'bg-slate-400 hover:bg-slate-500 text-white'
+                }`}
               >
-                <CheckCircle2 className="h-7 w-7" />
-                จบงาน &amp; ส่งมอบตู้สำเร็จ (Complete Job)
+                {step3Checklist.isCurrentlyComplete ? (
+                  <>
+                    <CheckCircle2 className="h-7 w-7" />
+                    จบงาน &amp; ส่งมอบตู้สำเร็จ (Complete Job)
+                  </>
+                ) : (
+                  <>
+                    <Lock className="h-6 w-6 text-white/80" />
+                    จบงาน &amp; ส่งมอบตู้ (รอทำครบ {step3Checklist.missingItems.length} ข้อ)
+                  </>
+                )}
               </Button>
             </div>
           )}

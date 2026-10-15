@@ -598,8 +598,116 @@ ${job.driver_notes ? `📝 หมายเหตุ/คำสั่งพิเ�
     }
   };
 
+  const selectedDriverJob = jobs.find((j) => j.id === driverSelectedJobId);
+  const isReefer = selectedDriverJob?.container_type === 'RH' || (selectedDriverJob?.container_type as string) === 'RF' || selectedDriverJob?.container_type === 'Reefer';
+
+  // Tab 3 Driver Simulator Validation Checklists
+  const tab3Step1Checklist = useMemo(() => {
+    const checkinOk = Boolean(driverAppForm.checkin_pickup && driverAppForm.checkin_pickup.trim());
+    const containerNoOk = Boolean(driverAppForm.container_no && driverAppForm.container_no.trim());
+
+    const photos = [
+      { key: 'photo_front', label: '1. หน้าตู้', done: Boolean(driverAppForm.photo_front) },
+      { key: 'photo_floor', label: '2. พื้นตู้ภายใน', done: Boolean(driverAppForm.photo_floor) },
+      { key: 'photo_left', label: '3. ซ้ายตู้', done: Boolean(driverAppForm.photo_left) },
+      { key: 'photo_right', label: '4. ขวาตู้', done: Boolean(driverAppForm.photo_right) },
+      { key: 'photo_back', label: '5. หลังตู้ (ประตู)', done: Boolean(driverAppForm.photo_back) },
+    ];
+    const photosDoneCount = photos.filter(p => p.done).length;
+    const standardPhotosOk = photosDoneCount === 5;
+
+    const reeferPhotos = [
+      { key: 'photo_reefer_drain', label: '1. รูน้ำทิ้ง 4 ด้าน', done: Boolean(driverAppForm.photo_reefer_drain) },
+      { key: 'photo_reefer_cable', label: '2. สายไฟตู้เย็น', done: Boolean(driverAppForm.photo_reefer_cable) },
+      { key: 'photo_reefer_temp', label: '3. หน้าจออุณหภูมิ', done: Boolean(driverAppForm.photo_reefer_temp) },
+    ];
+    const reeferPhotosDoneCount = reeferPhotos.filter(p => p.done).length;
+    const reeferPhotosOk = !isReefer || reeferPhotosDoneCount === 3;
+
+    const isPreviouslyPassed = selectedDriverJob?.status === 'in_progress' || selectedDriverJob?.status === 'completed';
+    const isCurrentlyComplete = checkinOk && containerNoOk && standardPhotosOk && reeferPhotosOk;
+    const isStep1Passed = isPreviouslyPassed || isCurrentlyComplete;
+
+    const missingItems: string[] = [];
+    if (!checkinOk) missingItems.push('กดปุ่มเช็คอินจุดรับตู้ (บันทึกเวลา + พิกัด GPS)');
+    if (!standardPhotosOk) missingItems.push(`ติ๊กตรวจสภาพตู้ 5 รูปให้ครบทุกมุม (ปัจจุบันติ๊กแล้ว ${photosDoneCount}/5 มุม)`);
+    if (isReefer && !reeferPhotosOk) missingItems.push(`ติ๊กตรวจตู้เย็น 3 รูปให้ครบ (ปัจจุบันติ๊กแล้ว ${reeferPhotosDoneCount}/3 รูป)`);
+    if (!containerNoOk) missingItems.push('กรอกหมายเลขตู้คอนเทนเนอร์ (Container No.)');
+
+    return {
+      checkinOk,
+      containerNoOk,
+      photosDoneCount,
+      standardPhotosOk,
+      reeferPhotosDoneCount,
+      reeferPhotosOk,
+      isCurrentlyComplete,
+      isStep1Passed,
+      missingItems,
+    };
+  }, [driverAppForm, isReefer, selectedDriverJob]);
+
+  const tab3Step2Checklist = useMemo(() => {
+    const checkinOk = Boolean(driverAppForm.checkin_packing && driverAppForm.checkin_packing.trim());
+    const photoSealedOk = Boolean(driverAppForm.photo_sealed);
+    const sealNoOk = Boolean(driverAppForm.seal_no && driverAppForm.seal_no.trim());
+
+    const isPreviouslyPassed = selectedDriverJob?.status === 'completed';
+    const isCurrentlyComplete = checkinOk && photoSealedOk && sealNoOk;
+    const isStep2Passed = isPreviouslyPassed || isCurrentlyComplete;
+
+    const missingItems: string[] = [];
+    if (!checkinOk) missingItems.push('กดปุ่มเช็คอินจุดบรรจุสินค้า (บันทึกเวลา + พิกัด GPS)');
+    if (!photoSealedOk) missingItems.push('ติ๊กถ่ายรูปหน้าตู้ที่ล็อคซีล (Seal) เรียบร้อยแล้ว');
+    if (!sealNoOk) missingItems.push('ยืนยันหมายเลขซีลที่ล็อค (Seal No.)');
+
+    return {
+      checkinOk,
+      photoSealedOk,
+      sealNoOk,
+      isCurrentlyComplete,
+      isStep2Passed,
+      missingItems,
+    };
+  }, [driverAppForm, selectedDriverJob]);
+
+  const tab3Step3Checklist = useMemo(() => {
+    const checkinOk = Boolean(driverAppForm.checkin_return && driverAppForm.checkin_return.trim());
+    const photoReturnOk = Boolean(driverAppForm.photo_return_front);
+
+    const isCurrentlyComplete = checkinOk && photoReturnOk;
+
+    const missingItems: string[] = [];
+    if (!checkinOk) missingItems.push('กดปุ่มเช็คอินจุดคืนตู้ (บันทึกเวลา + พิกัด GPS)');
+    if (!photoReturnOk) missingItems.push('ติ๊กถ่ายรูปหน้าตู้ส่งคืนที่ลาน/ท่าเรือ');
+
+    return {
+      checkinOk,
+      photoReturnOk,
+      isCurrentlyComplete,
+      missingItems,
+    };
+  }, [driverAppForm]);
+
   const handleSaveDriverUpdate = async (isCompleting: boolean = false) => {
     if (!driverSelectedJobId) return;
+
+    // Strict step validation before progressing
+    if (!isCompleting) {
+      if (driverCurrentStep === 'step1' && !tab3Step1Checklist.isStep1Passed) {
+        alert('⚠️ ยังไม่สามารถออกเดินทางไปจุดที่ 2 ได้ครับ\nกรุณาดำเนินการในจุดที่ 1 ให้ครบถ้วนก่อน:\n\n• ' + tab3Step1Checklist.missingItems.join('\n• '));
+        return;
+      }
+      if (driverCurrentStep === 'step2' && !tab3Step2Checklist.isStep2Passed) {
+        alert('⚠️ ยังไม่สามารถออกเดินทางไปจุดที่ 3 ได้ครับ\nกรุณาดำเนินการในจุดที่ 2 ให้ครบถ้วนก่อน:\n\n• ' + tab3Step2Checklist.missingItems.join('\n• '));
+        return;
+      }
+    } else {
+      if (!tab3Step3Checklist.isCurrentlyComplete) {
+        alert('⚠️ ยังไม่สามารถปิดงานและส่งมอบตู้ได้ครับ\nกรุณาดำเนินการในจุดที่ 3 ให้ครบถ้วนก่อน:\n\n• ' + tab3Step3Checklist.missingItems.join('\n• '));
+        return;
+      }
+    }
 
     const payload: any = {
       container_no: driverAppForm.container_no,
@@ -619,13 +727,14 @@ ${job.driver_notes ? `📝 หมายเหตุ/คำสั่งพิเ�
     if (!error) {
       alert(isCompleting ? '✅ ปิดงานและส่งมอบตู้สำเร็จเรียบร้อย!' : '💾 บันทึกข้อมูลและเช็คอินเรียบร้อย');
       fetchData();
+      if (!isCompleting) {
+        if (driverCurrentStep === 'step1') setDriverCurrentStep('step2');
+        else if (driverCurrentStep === 'step2') setDriverCurrentStep('step3');
+      }
     } else {
       alert('เกิดข้อผิดพลาด: ' + error.message);
     }
   };
-
-  const selectedDriverJob = jobs.find((j) => j.id === driverSelectedJobId);
-  const isReefer = selectedDriverJob?.container_type === 'RH' || (selectedDriverJob?.container_type as string) === 'RF';
 
   return (
     <div className="p-6 md:p-8 space-y-6 bg-slate-50 min-h-screen">
@@ -1700,29 +1809,60 @@ ${job.driver_notes ? `📝 หมายเหตุ/คำสั่งพิเ�
                       <button
                         type="button"
                         onClick={() => setDriverCurrentStep('step1')}
-                        className={`py-2.5 rounded-xl transition-all ${
+                        className={`py-2 rounded-xl transition-all flex flex-col items-center justify-center gap-0.5 ${
                           driverCurrentStep === 'step1' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-700 hover:bg-slate-300'
                         }`}
                       >
-                        1. รับตู้
+                        <span className="text-[10px] opacity-80">{tab3Step1Checklist.isStep1Passed ? '✓ ผ่านแล้ว' : 'จุดที่ 1'}</span>
+                        <span>1. รับตู้</span>
                       </button>
                       <button
                         type="button"
-                        onClick={() => setDriverCurrentStep('step2')}
-                        className={`py-2.5 rounded-xl transition-all ${
-                          driverCurrentStep === 'step2' ? 'bg-amber-600 text-white shadow-sm' : 'text-slate-700 hover:bg-slate-300'
+                        onClick={() => {
+                          if (!tab3Step1Checklist.isStep1Passed) {
+                            alert('⚠️ ไม่สามารถไปจุดที่ 2 ได้ครับ (จำลอง):\nกรุณาเช็คอินและตรวจตู้จุดที่ 1 ให้ครบถ้วนก่อน:\n\n• ' + tab3Step1Checklist.missingItems.join('\n• '));
+                            return;
+                          }
+                          setDriverCurrentStep('step2');
+                        }}
+                        className={`py-2 rounded-xl transition-all flex flex-col items-center justify-center gap-0.5 ${
+                          driverCurrentStep === 'step2'
+                            ? 'bg-amber-600 text-white shadow-sm'
+                            : !tab3Step1Checklist.isStep1Passed
+                            ? 'text-slate-400 cursor-not-allowed opacity-75'
+                            : 'text-slate-700 hover:bg-slate-300'
                         }`}
                       >
-                        2. บรรจุ
+                        <span className="text-[10px] opacity-80 flex items-center gap-0.5">
+                          {!tab3Step1Checklist.isStep1Passed ? <Lock className="h-2.5 w-2.5" /> : tab3Step2Checklist.isStep2Passed ? '✓ ผ่านแล้ว' : 'จุดที่ 2'}
+                        </span>
+                        <span>2. บรรจุ</span>
                       </button>
                       <button
                         type="button"
-                        onClick={() => setDriverCurrentStep('step3')}
-                        className={`py-2.5 rounded-xl transition-all ${
-                          driverCurrentStep === 'step3' ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-700 hover:bg-slate-300'
+                        onClick={() => {
+                          if (!tab3Step1Checklist.isStep1Passed) {
+                            alert('⚠️ กรุณาดำเนินการจุดที่ 1 (รับตู้) ให้ครบถ้วนก่อนครับ');
+                            return;
+                          }
+                          if (!tab3Step2Checklist.isStep2Passed) {
+                            alert('⚠️ ไม่สามารถไปจุดที่ 3 ได้ครับ (จำลอง):\nกรุณาเช็คอินและล็อคซีลจุดที่ 2 ให้ครบถ้วนก่อน:\n\n• ' + tab3Step2Checklist.missingItems.join('\n• '));
+                            return;
+                          }
+                          setDriverCurrentStep('step3');
+                        }}
+                        className={`py-2 rounded-xl transition-all flex flex-col items-center justify-center gap-0.5 ${
+                          driverCurrentStep === 'step3'
+                            ? 'bg-emerald-600 text-white shadow-sm'
+                            : !tab3Step2Checklist.isStep2Passed
+                            ? 'text-slate-400 cursor-not-allowed opacity-75'
+                            : 'text-slate-700 hover:bg-slate-300'
                         }`}
                       >
-                        3. คืนตู้
+                        <span className="text-[10px] opacity-80 flex items-center gap-0.5">
+                          {!tab3Step2Checklist.isStep2Passed ? <Lock className="h-2.5 w-2.5" /> : tab3Step3Checklist.isCurrentlyComplete ? '✓ ผ่านแล้ว' : 'จุดที่ 3'}
+                        </span>
+                        <span>3. คืนตู้</span>
                       </button>
                     </div>
 
@@ -1872,15 +2012,65 @@ ${job.driver_notes ? `📝 หมายเหตุ/คำสั่งพิเ�
                           </div>
                         )}
 
+                        {/* Step 1 Mandatory Pre-departure Checklist Card */}
+                        <div className={`p-3 rounded-xl border-2 space-y-2 text-xs font-bold transition-all ${
+                          tab3Step1Checklist.isCurrentlyComplete 
+                            ? 'bg-emerald-50 border-emerald-400' 
+                            : 'bg-rose-50/80 border-rose-300'
+                        }`}>
+                          <div className="flex items-center justify-between pb-1 border-b border-slate-200">
+                            <span className="font-black text-slate-900 flex items-center gap-1.5">
+                              <ShieldCheck className={`h-4 w-4 ${tab3Step1Checklist.isCurrentlyComplete ? 'text-emerald-600' : 'text-rose-600'}`} />
+                              เงื่อนไขก่อนออกเดินทาง (จุดที่ 1):
+                            </span>
+                            <Badge className={tab3Step1Checklist.isCurrentlyComplete ? 'bg-emerald-600 text-white text-[10px]' : 'bg-rose-600 text-white text-[10px]'}>
+                              {tab3Step1Checklist.isCurrentlyComplete ? '✓ ครบถ้วนพร้อมเดินทาง' : `ขาดอีก ${tab3Step1Checklist.missingItems.length} ข้อ`}
+                            </Badge>
+                          </div>
+                          <div className="space-y-1">
+                            <div className={tab3Step1Checklist.checkinOk ? 'text-emerald-800' : 'text-rose-800'}>
+                              {tab3Step1Checklist.checkinOk ? '✓ เช็คอินจุดรับตู้แล้ว' : '❌ ยังไม่ได้เช็คอินจุดรับตู้'}
+                            </div>
+                            <div className={tab3Step1Checklist.standardPhotosOk ? 'text-emerald-800' : 'text-rose-800'}>
+                              {tab3Step1Checklist.standardPhotosOk ? '✓ ตรวจตู้ครบ 5 มุมแล้ว' : `❌ ตรวจสภาพตู้แล้ว ${tab3Step1Checklist.photosDoneCount}/5 มุม`}
+                            </div>
+                            {isReefer && (
+                              <div className={tab3Step1Checklist.reeferPhotosOk ? 'text-emerald-800' : 'text-rose-800'}>
+                                {tab3Step1Checklist.reeferPhotosOk ? '✓ ตรวจตู้เย็นครบ 3 รูปแล้ว' : `❌ ตรวจตู้เย็นแล้ว ${tab3Step1Checklist.reeferPhotosDoneCount}/3 รูป`}
+                              </div>
+                            )}
+                            <div className={tab3Step1Checklist.containerNoOk ? 'text-emerald-800' : 'text-rose-800'}>
+                              {tab3Step1Checklist.containerNoOk ? `✓ ระบุเบอร์ตู้แล้ว: ${driverAppForm.container_no}` : '❌ ยังไม่ได้ระบุหมายเลขตู้'}
+                            </div>
+                          </div>
+                        </div>
+
                         <Button
                           type="button"
                           onClick={() => {
+                            if (!tab3Step1Checklist.isStep1Passed) {
+                              alert('⚠️ ยังไม่สามารถออกเดินทางไปจุดที่ 2 ได้ครับ (จำลอง)\nกรุณาดำเนินการในจุดที่ 1 ให้ครบถ้วนก่อน:\n\n• ' + tab3Step1Checklist.missingItems.join('\n• '));
+                              return;
+                            }
                             handleSaveDriverUpdate(false);
-                            setDriverCurrentStep('step2');
                           }}
-                          className="w-full bg-slate-900 hover:bg-slate-800 text-white font-black h-12 text-sm rounded-xl"
+                          className={`w-full font-black h-12 text-sm rounded-xl transition-all ${
+                            tab3Step1Checklist.isStep1Passed 
+                              ? 'bg-emerald-600 hover:bg-emerald-700 text-white' 
+                              : 'bg-slate-400 hover:bg-slate-500 text-white'
+                          }`}
                         >
-                          บันทึกจุดที่ 1 &amp; ออกเดินทางไปจุดบรรจุ ➔
+                          {tab3Step1Checklist.isStep1Passed ? (
+                            <>
+                              <CheckCircle2 className="h-5 w-5 text-white mr-1.5" />
+                              บันทึกจุดที่ 1 &amp; ออกเดินทางไปจุดบรรจุ ➔
+                            </>
+                          ) : (
+                            <>
+                              <Lock className="h-4 w-4 text-white/80 mr-1.5" />
+                              บันทึกจุดที่ 1 (รอทำครบ {tab3Step1Checklist.missingItems.length} ข้อ)
+                            </>
+                          )}
                         </Button>
                       </div>
                     )}
@@ -1940,15 +2130,60 @@ ${job.driver_notes ? `📝 หมายเหตุ/คำสั่งพิเ�
                           </label>
                         </div>
 
+                        {/* Step 2 Mandatory Pre-departure Checklist Card */}
+                        <div className={`p-3 rounded-xl border-2 space-y-2 text-xs font-bold transition-all ${
+                          tab3Step2Checklist.isCurrentlyComplete 
+                            ? 'bg-emerald-50 border-emerald-400' 
+                            : 'bg-rose-50/80 border-rose-300'
+                        }`}>
+                          <div className="flex items-center justify-between pb-1 border-b border-slate-200">
+                            <span className="font-black text-slate-900 flex items-center gap-1.5">
+                              <ShieldCheck className={`h-4 w-4 ${tab3Step2Checklist.isCurrentlyComplete ? 'text-emerald-600' : 'text-rose-600'}`} />
+                              เงื่อนไขก่อนออกเดินทาง (จุดที่ 2):
+                            </span>
+                            <Badge className={tab3Step2Checklist.isCurrentlyComplete ? 'bg-emerald-600 text-white text-[10px]' : 'bg-rose-600 text-white text-[10px]'}>
+                              {tab3Step2Checklist.isCurrentlyComplete ? '✓ ครบถ้วนพร้อมเดินทาง' : `ขาดอีก ${tab3Step2Checklist.missingItems.length} ข้อ`}
+                            </Badge>
+                          </div>
+                          <div className="space-y-1">
+                            <div className={tab3Step2Checklist.checkinOk ? 'text-emerald-800' : 'text-rose-800'}>
+                              {tab3Step2Checklist.checkinOk ? '✓ เช็คอินจุดบรรจุสินค้าแล้ว' : '❌ ยังไม่ได้เช็คอินจุดบรรจุสินค้า'}
+                            </div>
+                            <div className={tab3Step2Checklist.photoSealedOk ? 'text-emerald-800' : 'text-rose-800'}>
+                              {tab3Step2Checklist.photoSealedOk ? '✓ ถ่ายรูปตู้ล็อคซีลแล้ว' : '❌ ยังไม่ได้ถ่ายรูปตู้ล็อคซีล'}
+                            </div>
+                            <div className={tab3Step2Checklist.sealNoOk ? 'text-emerald-800' : 'text-rose-800'}>
+                              {tab3Step2Checklist.sealNoOk ? `✓ ระบุหมายเลขซีลแล้ว: ${driverAppForm.seal_no}` : '❌ ยังไม่ได้ระบุหมายเลขซีล'}
+                            </div>
+                          </div>
+                        </div>
+
                         <Button
                           type="button"
                           onClick={() => {
+                            if (!tab3Step2Checklist.isStep2Passed) {
+                              alert('⚠️ ยังไม่สามารถออกเดินทางไปจุดที่ 3 ได้ครับ (จำลอง)\nกรุณาดำเนินการในจุดที่ 2 ให้ครบถ้วนก่อน:\n\n• ' + tab3Step2Checklist.missingItems.join('\n• '));
+                              return;
+                            }
                             handleSaveDriverUpdate(false);
-                            setDriverCurrentStep('step3');
                           }}
-                          className="w-full bg-slate-900 hover:bg-slate-800 text-white font-black h-12 text-sm rounded-xl"
+                          className={`w-full font-black h-12 text-sm rounded-xl transition-all ${
+                            tab3Step2Checklist.isStep2Passed 
+                              ? 'bg-emerald-600 hover:bg-emerald-700 text-white' 
+                              : 'bg-slate-400 hover:bg-slate-500 text-white'
+                          }`}
                         >
-                          บันทึกจุดที่ 2 &amp; ออกเดินทางไปจุดคืนตู้ ➔
+                          {tab3Step2Checklist.isStep2Passed ? (
+                            <>
+                              <CheckCircle2 className="h-5 w-5 text-white mr-1.5" />
+                              บันทึกจุดที่ 2 &amp; ออกเดินทางไปจุดคืนตู้ ➔
+                            </>
+                          ) : (
+                            <>
+                              <Lock className="h-4 w-4 text-white/80 mr-1.5" />
+                              บันทึกจุดที่ 2 (รอทำครบ {tab3Step2Checklist.missingItems.length} ข้อ)
+                            </>
+                          )}
                         </Button>
                       </div>
                     )}
@@ -2016,14 +2251,58 @@ ${job.driver_notes ? `📝 หมายเหตุ/คำสั่งพิเ�
                           />
                         </div>
 
+                        {/* Step 3 Mandatory Pre-completion Checklist Card */}
+                        <div className={`p-3 rounded-xl border-2 space-y-2 text-xs font-bold transition-all ${
+                          tab3Step3Checklist.isCurrentlyComplete 
+                            ? 'bg-emerald-50 border-emerald-400' 
+                            : 'bg-rose-50/80 border-rose-300'
+                        }`}>
+                          <div className="flex items-center justify-between pb-1 border-b border-slate-200">
+                            <span className="font-black text-slate-900 flex items-center gap-1.5">
+                              <ShieldCheck className={`h-4 w-4 ${tab3Step3Checklist.isCurrentlyComplete ? 'text-emerald-600' : 'text-rose-600'}`} />
+                              เงื่อนไขก่อนปิดจบงาน (จุดที่ 3):
+                            </span>
+                            <Badge className={tab3Step3Checklist.isCurrentlyComplete ? 'bg-emerald-600 text-white text-[10px]' : 'bg-rose-600 text-white text-[10px]'}>
+                              {tab3Step3Checklist.isCurrentlyComplete ? '✓ ครบถ้วนพร้อมจบงาน' : `ขาดอีก ${tab3Step3Checklist.missingItems.length} ข้อ`}
+                            </Badge>
+                          </div>
+                          <div className="space-y-1">
+                            <div className={tab3Step3Checklist.checkinOk ? 'text-emerald-800' : 'text-rose-800'}>
+                              {tab3Step3Checklist.checkinOk ? '✓ เช็คอินจุดคืนตู้แล้ว' : '❌ ยังไม่ได้เช็คอินจุดคืนตู้'}
+                            </div>
+                            <div className={tab3Step3Checklist.photoReturnOk ? 'text-emerald-800' : 'text-rose-800'}>
+                              {tab3Step3Checklist.photoReturnOk ? '✓ ถ่ายรูปหน้าตู้ส่งคืนที่ลาน/ท่าเรือแล้ว' : '❌ ยังไม่ได้ถ่ายรูปหน้าตู้ส่งคืนที่ลาน/ท่าเรือ'}
+                            </div>
+                          </div>
+                        </div>
+
                         {/* BIG COMPLETE BUTTON */}
                         <Button
                           type="button"
-                          onClick={() => handleSaveDriverUpdate(true)}
-                          className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-black h-14 text-base rounded-2xl gap-2 shadow-lg"
+                          onClick={() => {
+                            if (!tab3Step3Checklist.isCurrentlyComplete) {
+                              alert('⚠️ ยังไม่สามารถปิดงานได้ครับ (จำลอง)\nกรุณาดำเนินการในจุดที่ 3 ให้ครบถ้วนก่อน:\n\n• ' + tab3Step3Checklist.missingItems.join('\n• '));
+                              return;
+                            }
+                            handleSaveDriverUpdate(true);
+                          }}
+                          className={`w-full font-black h-14 text-base rounded-2xl gap-2 shadow-lg transition-all ${
+                            tab3Step3Checklist.isCurrentlyComplete 
+                              ? 'bg-emerald-600 hover:bg-emerald-700 text-white' 
+                              : 'bg-slate-400 hover:bg-slate-500 text-white'
+                          }`}
                         >
-                          <CheckCircle2 className="h-6 w-6" />
-                          จบงาน &amp; ส่งมอบตู้สำเร็จ (Complete Job)
+                          {tab3Step3Checklist.isCurrentlyComplete ? (
+                            <>
+                              <CheckCircle2 className="h-6 w-6" />
+                              จบงาน &amp; ส่งมอบตู้สำเร็จ (Complete Job)
+                            </>
+                          ) : (
+                            <>
+                              <Lock className="h-5 w-5 text-white/80" />
+                              จบงาน &amp; ส่งมอบตู้ (รอทำครบ {tab3Step3Checklist.missingItems.length} ข้อ)
+                            </>
+                          )}
                         </Button>
                       </div>
                     )}

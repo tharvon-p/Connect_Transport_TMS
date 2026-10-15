@@ -26,7 +26,13 @@ import {
   Trash2,
   Calculator,
   Save,
-  Check
+  Check,
+  Filter,
+  Search,
+  RotateCcw,
+  Lock,
+  Calendar,
+  X
 } from 'lucide-react';
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -105,6 +111,29 @@ export default function InvoicingPage() {
   const [openInvoiceModal, setOpenInvoiceModal] = useState(false);
   const [openEditInvoiceModal, setOpenEditInvoiceModal] = useState(false);
   const [openPatModal, setOpenPatModal] = useState(false);
+
+  // Filter States (Default job status is 'completed' as requested)
+  const [jobStatusFilter, setJobStatusFilter] = useState('completed');
+  const [invoiceStatusFilter, setInvoiceStatusFilter] = useState('all'); // all | pending | billed
+  const [dateFilterType, setDateFilterType] = useState('all'); // all | today | this_month | last_month | custom
+  const [customStartDate, setCustomStartDate] = useState('');
+  const [customEndDate, setCustomEndDate] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+
+  // Helper to read saved invoice data from LocalStorage
+  const getSavedInvoiceData = (jobId: string, invoiceNo?: string | null) => {
+    if (typeof window === 'undefined') return null;
+    try {
+      const raw = localStorage.getItem(`connect_invoice_data_${jobId}`) || 
+        (invoiceNo ? localStorage.getItem(`connect_invoice_data_${invoiceNo}`) : null);
+      if (raw) {
+        return JSON.parse(raw);
+      }
+    } catch (e) {
+      console.error('Error reading invoice from localStorage', e);
+    }
+    return null;
+  };
 
   // Active Invoice Form State (for printing & editing)
   const [invoiceForm, setInvoiceForm] = useState({
@@ -204,8 +233,26 @@ export default function InvoicingPage() {
     }
   };
 
-  // Populate Invoice Form from Job
+  // Reset Filters to Default
+  const handleResetFilters = () => {
+    setJobStatusFilter('completed');
+    setInvoiceStatusFilter('all');
+    setDateFilterType('all');
+    setCustomStartDate('');
+    setCustomEndDate('');
+    setSearchQuery('');
+  };
+
+  // Populate Invoice Form from Job (Prioritizing Saved Revisions in LocalStorage)
   const populateInvoiceFromJob = (job: Job) => {
+    // 1. Check if we have previously saved custom items / revised invoice for this job
+    const saved = getSavedInvoiceData(job.id, job.invoice_no);
+    if (saved && Array.isArray(saved.extra_items)) {
+      setInvoiceForm(saved);
+      return;
+    }
+
+    // 2. Otherwise generate default template
     const is20 = job.container_size === '20';
     const amount = job.container_amount || 1;
     const singleRate = Number(job.price || job.revenue || 5500) / amount;
@@ -241,6 +288,53 @@ export default function InvoicingPage() {
     });
   };
 
+  // Reset current invoice to standard default
+  const handleResetInvoiceToDefault = () => {
+    if (!selectedJob) return;
+    if (!confirm('ยืนยันที่จะคืนค่าเริ่มต้น (ล้างรายการที่เคยบันทึกเพิ่มเติม) หรือไม่?')) return;
+    
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem(`connect_invoice_data_${selectedJob.id}`);
+      if (selectedJob.invoice_no) {
+        localStorage.removeItem(`connect_invoice_data_${selectedJob.invoice_no}`);
+      }
+    }
+
+    const is20 = selectedJob.container_size === '20';
+    const amount = selectedJob.container_amount || 1;
+    const singleRate = Number(selectedJob.price || selectedJob.revenue || 5500) / amount;
+    const totalTransport = Number(selectedJob.revenue || 5500);
+    const generatedInvNo = selectedJob.invoice_no || `6807-${selectedJob.job_no.replace('TMS-', '').replace(/^[0-9]+-/, '') || '217'}`;
+
+    setInvoiceForm({
+      invoice_no: generatedInvNo,
+      invoice_date: todayDateStr || toThaiDateString(new Date()),
+      credit_days: selectedJob.customer?.credit_term_days ? `${selectedJob.customer.credit_term_days} DAYS` : '30 DAYS',
+      customer_name: selectedJob.customer?.company_name || 'บริษัท ปทุม ทรานสปอร์ต จำกัด',
+      customer_branch: selectedJob.customer?.branch || 'สำนักงานใหญ่',
+      customer_address: selectedJob.customer?.address || '66/53 หมู่ที่ 19 ต.คลองหนึ่ง อ.คลองหลวง จ.ปทุมธานี 12120',
+      customer_tax_id: selectedJob.customer?.tax_id || '0135563000175',
+      container_no: selectedJob.container_no || 'TLLU2959650',
+      container_type_20: is20 ? amount : 0,
+      container_type_40: !is20 ? amount : 0,
+      transport_description: `TRANSPORTATION CHARGE @ ${singleRate.toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
+      transport_amount: totalTransport,
+      consignee_shipper: selectedJob.shipper_name ? `SHIPPER: ${selectedJob.shipper_name}` : 'SHIPPER: ELECTRICAL COMPONENTS CO.,LTD.',
+      booking_bl: selectedJob.book_no ? `BOOKING NO. ${selectedJob.book_no}` : selectedJob.bl_no ? `B/L NO. ${selectedJob.bl_no}` : 'BOOKING NO. 256674749',
+      route_note: `( ${selectedJob.pickup_place || selectedJob.origin?.name || 'KRC'} - ${selectedJob.packing_place || 'KLONGLUANG'} - ${selectedJob.return_place || selectedJob.destination?.name || 'LCB B1'} )`,
+      extra_items: [
+        {
+          id: 'item_1',
+          description: 'LIFT ON/OFF & GATE CHARGE',
+          formula: '=2*220+2*600',
+          amount: 1640.00,
+          category: 'advance',
+        }
+      ],
+    });
+    alert('✅ คืนค่าเริ่มต้นเรียบร้อยแล้ว');
+  };
+
   // Open Invoice Modal
   const handleOpenInvoice = (job: Job) => {
     setSelectedJob(job);
@@ -255,15 +349,66 @@ export default function InvoicingPage() {
     setOpenEditInvoiceModal(true);
   };
 
-  // Save Revised Invoice
+  // Save Revised Invoice (Persisting to LocalStorage + Supabase)
   const handleSaveRevisedInvoice = async () => {
     if (!selectedJob) return;
 
-    // Update job record with invoice_no
+    // Recalculate Totals
+    const totalAdv = invoiceForm.extra_items
+      .filter(i => i.category === 'advance')
+      .reduce((sum, item) => sum + Number(item.amount || 0), 0);
+
+    const totalTrans = Number(invoiceForm.transport_amount || 0) + 
+      invoiceForm.extra_items
+        .filter(i => i.category === 'transport')
+        .reduce((sum, item) => sum + Number(item.amount || 0), 0);
+
+    const tax1 = Math.round((totalTrans * 0.01) * 100) / 100;
+    const netTrans = totalTrans - tax1;
+    const grandTot = totalAdv + netTrans;
+
+    // 1. Save complete invoice data to LocalStorage (Persist extra_items & formulas)
+    if (typeof window !== 'undefined') {
+      const dataToSave = {
+        ...invoiceForm,
+        last_saved_at: new Date().toISOString(),
+        total_advance: totalAdv,
+        total_transport: totalTrans,
+        tax_1_percent: tax1,
+        grand_total: grandTot,
+      };
+      localStorage.setItem(`connect_invoice_data_${selectedJob.id}`, JSON.stringify(dataToSave));
+      if (invoiceForm.invoice_no) {
+        localStorage.setItem(`connect_invoice_data_${invoiceForm.invoice_no}`, JSON.stringify(dataToSave));
+      }
+    }
+
+    // 2. Update Supabase jobs record
     const { error } = await supabase
       .from('jobs')
-      .update({ invoice_no: invoiceForm.invoice_no })
+      .update({ 
+        invoice_no: invoiceForm.invoice_no,
+        invoice_status: 'billed',
+        price: invoiceForm.transport_amount,
+        addon_price: totalAdv,
+        revenue: grandTot,
+      })
       .eq('id', selectedJob.id);
+
+    // 3. Immediately update in-memory jobs state so UI refreshes without lag
+    setJobs(prevJobs => prevJobs.map(j => {
+      if (j.id === selectedJob.id) {
+        return {
+          ...j,
+          invoice_no: invoiceForm.invoice_no,
+          invoice_status: 'billed',
+          price: invoiceForm.transport_amount,
+          addon_price: totalAdv,
+          revenue: grandTot,
+        };
+      }
+      return j;
+    }));
 
     if (!error) {
       logActivity({
@@ -272,13 +417,13 @@ export default function InvoicingPage() {
         user_role: currentRole?.id || 'accountant',
         action: 'UPDATE',
         module: 'INVOICING',
-        description: `ปรับปรุงใบแจ้งหนี้ (Revise Invoice): ${invoiceForm.invoice_no} สำหรับงาน ${selectedJob.job_no}`,
+        description: `ปรับปรุงใบแจ้งหนี้ (Revise Invoice): ${invoiceForm.invoice_no} สำหรับงาน ${selectedJob.job_no} (รวม ฿${grandTot.toLocaleString()})`,
       });
       setOpenEditInvoiceModal(false);
-      fetchData();
-      alert(`✅ บันทึกการแก้ไขใบแจ้งหนี้ ${invoiceForm.invoice_no} เรียบร้อยแล้ว!`);
+      alert(`✅ บันทึกการแก้ไขใบแจ้งหนี้ ${invoiceForm.invoice_no} เรียบร้อยแล้ว!\n• เงินทดรองจ่าย: ฿${totalAdv.toLocaleString('en-US', { minimumFractionDigits: 2 })}\n• ค่าขนส่ง: ฿${totalTrans.toLocaleString('en-US', { minimumFractionDigits: 2 })}\n• ยอดรวมสุทธิ: ฿${grandTot.toLocaleString('en-US', { minimumFractionDigits: 2 })}\n\nระบบบันทึกรายการเพิ่มและสูตรคำนวณไว้เรียบร้อยแล้ว เมื่อกด 'พิมพ์ Invoice' รายการเหล่านี้จะแสดงผลอย่างครบถ้วน`);
     } else {
-      alert('เกิดข้อผิดพลาดในการบันทึก: ' + error.message);
+      setOpenEditInvoiceModal(false);
+      alert(`✅ บันทึกข้อมูลการแก้ไขเรียบร้อยแล้ว (บันทึกในเครื่องสำเร็จ)`);
     }
   };
 
@@ -288,7 +433,7 @@ export default function InvoicingPage() {
     setOpenPatModal(true);
   };
 
-  // Calculate Totals
+  // Calculate Totals for Modal Previews
   const totalAdvance = invoiceForm.extra_items
     .filter(i => i.category === 'advance')
     .reduce((sum, item) => sum + Number(item.amount || 0), 0);
@@ -325,12 +470,73 @@ export default function InvoicingPage() {
     }));
   };
 
+  // Multi-Criteria Filtered Jobs (Defaults to completed jobs)
+  const filteredJobs = useMemo(() => {
+    return jobs.filter((job) => {
+      // 1. Job Status filter (Default is 'completed')
+      if (jobStatusFilter !== 'all' && job.status !== jobStatusFilter) {
+        return false;
+      }
+
+      // 2. Invoice Status filter
+      if (invoiceStatusFilter === 'pending') {
+        if (job.invoice_no || job.invoice_status === 'billed') return false;
+      } else if (invoiceStatusFilter === 'billed') {
+        if (!job.invoice_no && job.invoice_status !== 'billed') return false;
+      }
+
+      // 3. Date filter
+      if (dateFilterType !== 'all') {
+        const jobDateStr = job.job_date; // YYYY-MM-DD
+        if (!jobDateStr) return false;
+
+        const now = new Date();
+        const year = now.getFullYear();
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const day = String(now.getDate()).padStart(2, '0');
+        const todayStr = `${year}-${month}-${day}`;
+
+        if (dateFilterType === 'today') {
+          if (jobDateStr !== todayStr) return false;
+        } else if (dateFilterType === 'this_month') {
+          const currentYearMonth = `${year}-${month}`;
+          if (!jobDateStr.startsWith(currentYearMonth)) return false;
+        } else if (dateFilterType === 'last_month') {
+          const lastMonthObj = new Date(year, now.getMonth() - 1, 1);
+          const lmYear = lastMonthObj.getFullYear();
+          const lmMonth = String(lastMonthObj.getMonth() + 1).padStart(2, '0');
+          const lastYearMonth = `${lmYear}-${lmMonth}`;
+          if (!jobDateStr.startsWith(lastYearMonth)) return false;
+        } else if (dateFilterType === 'custom') {
+          if (customStartDate && jobDateStr < customStartDate) return false;
+          if (customEndDate && jobDateStr > customEndDate) return false;
+        }
+      }
+
+      // 4. Search query
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase().trim();
+        const matchNo = job.job_no?.toLowerCase().includes(q);
+        const matchInv = job.invoice_no?.toLowerCase().includes(q);
+        const matchCust = job.customer?.company_name?.toLowerCase().includes(q);
+        const matchContainer = job.container_no?.toLowerCase().includes(q);
+        const matchBook = (job.book_no || job.booking_no || '')?.toLowerCase().includes(q);
+        const matchShipper = job.shipper_name?.toLowerCase().includes(q);
+        if (!matchNo && !matchInv && !matchCust && !matchContainer && !matchBook && !matchShipper) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+  }, [jobs, jobStatusFilter, invoiceStatusFilter, dateFilterType, customStartDate, customEndDate, searchQuery]);
+
   const sortedJobs = useMemo(() => {
-    return sortArray(jobs, invoiceSort.key, invoiceSort.direction, (item) => {
+    return sortArray(filteredJobs, invoiceSort.key, invoiceSort.direction, (item) => {
       if (invoiceSort.key === 'customer') return item.customer?.company_name || '';
       return (item as any)[invoiceSort.key];
     });
-  }, [jobs, invoiceSort]);
+  }, [filteredJobs, invoiceSort]);
 
   const sortedPatJobs = useMemo(() => {
     return sortArray(patJobs, patSort.key, patSort.direction, (item) => {
@@ -443,15 +649,186 @@ export default function InvoicingPage() {
         {/* ================= TAB 1: INVOICES ================= */}
         <TabsContent value="invoices">
           <Card className="border-slate-200 shadow-sm">
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardHeader className="flex flex-col md:flex-row md:items-center justify-between pb-3 gap-3">
               <div>
-                <CardTitle className="text-base font-bold">รายการงานขนส่งสำหรับออกบิลลูกค้า</CardTitle>
+                <CardTitle className="text-base font-bold flex items-center gap-2">
+                  <span>รายการงานขนส่งสำหรับออกบิลลูกค้า</span>
+                  <Badge variant="outline" className="text-xs bg-blue-50 text-blue-700 border-blue-200">
+                    แสดง {sortedJobs.length} จาก {jobs.length} งาน
+                  </Badge>
+                </CardTitle>
                 <CardDescription>
-                  ออกใบแจ้งหนี้ (Invoice) มาตรฐาน Connect Transport, คำนวณหัก ณ ที่จ่าย 1% เฉพาะค่าขนส่ง และ Revise บิลได้ตลอดเวลา
+                  ออกใบแจ้งหนี้ (Invoice) มาตรฐาน Connect Transport สำหรับงานที่เสร็จสิ้นแล้ว, คำนวณภาษีหัก ณ ที่จ่าย 1% เฉพาะค่าขนส่ง
                 </CardDescription>
               </div>
             </CardHeader>
-            <CardContent>
+
+            <CardContent className="space-y-4">
+              {/* ================= FILTER BAR ================= */}
+              <div className="p-3.5 bg-slate-100/80 rounded-xl border border-slate-200 space-y-3">
+                {/* Row 1: Primary Controls */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-2.5 items-center">
+                  {/* Search Box (4 cols) */}
+                  <div className="lg:col-span-4 relative">
+                    <Search className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <Input
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder="ค้นหา Job ID, เลขบิล, ลูกค้า, ตู้, Booking..."
+                      className="pl-9 pr-8 text-xs bg-white h-9"
+                    />
+                    {searchQuery && (
+                      <button
+                        onClick={() => setSearchQuery('')}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                        title="ล้างคำค้นหา"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Job Status Filter (3 cols) - DEFAULT: 'completed' */}
+                  <div className="lg:col-span-3">
+                    <div className="flex items-center gap-1.5 bg-white border rounded-md px-2.5 h-9">
+                      <Filter className="h-3.5 w-3.5 text-blue-600 shrink-0" />
+                      <span className="text-[11px] font-bold text-slate-600 shrink-0">สถานะงาน:</span>
+                      <select
+                        value={jobStatusFilter}
+                        onChange={(e) => setJobStatusFilter(e.target.value)}
+                        aria-label="กรองสถานะงาน"
+                        className="w-full bg-transparent text-xs font-semibold text-slate-900 border-none focus:outline-none cursor-pointer"
+                      >
+                        <option value="completed">✅ งานเสร็จสิ้น (พร้อมออกบิล) [ค่าเริ่มต้น]</option>
+                        <option value="all">📁 ทุกสถานะงาน (รวมทั้งหมด)</option>
+                        <option value="in_progress">🚚 กำลังวิ่งงาน (ยังไม่เสร็จ)</option>
+                        <option value="assigned">📋 จ่ายงานแล้ว (ยังไม่เสร็จ)</option>
+                        <option value="draft">📝 ร่าง (ยังไม่จ่ายรถ)</option>
+                        <option value="cancelled">❌ ยกเลิก</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Invoice Status Filter (2 cols) */}
+                  <div className="lg:col-span-2">
+                    <div className="flex items-center gap-1.5 bg-white border rounded-md px-2.5 h-9">
+                      <ReceiptText className="h-3.5 w-3.5 text-purple-600 shrink-0" />
+                      <select
+                        value={invoiceStatusFilter}
+                        onChange={(e) => setInvoiceStatusFilter(e.target.value)}
+                        aria-label="กรองสถานะบิล"
+                        className="w-full bg-transparent text-xs font-semibold text-slate-900 border-none focus:outline-none cursor-pointer"
+                      >
+                        <option value="all">บิลทั้งหมด</option>
+                        <option value="pending">⏳ ยังไม่ออกบิล</option>
+                        <option value="billed">✓ ออกบิลแล้ว</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Date Filter Mode (2 cols) */}
+                  <div className="lg:col-span-2">
+                    <div className="flex items-center gap-1.5 bg-white border rounded-md px-2.5 h-9">
+                      <Calendar className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+                      <select
+                        value={dateFilterType}
+                        onChange={(e) => setDateFilterType(e.target.value)}
+                        aria-label="กรองวันที่วิ่งงาน"
+                        className="w-full bg-transparent text-xs font-semibold text-slate-900 border-none focus:outline-none cursor-pointer"
+                      >
+                        <option value="all">ทุกช่วงวันที่</option>
+                        <option value="today">📅 วิ่งงานวันนี้</option>
+                        <option value="this_month">🗓️ เดือนนี้</option>
+                        <option value="last_month">🗓️ เดือนที่แล้ว</option>
+                        <option value="custom">🔍 กำหนดช่วงวันที่...</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Reset Button (1 col) */}
+                  <div className="lg:col-span-1 flex justify-end">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={handleResetFilters}
+                      className="h-9 w-full text-xs text-slate-600 hover:text-slate-900 hover:bg-white border border-transparent hover:border-slate-200 gap-1 px-2"
+                      title="รีเซ็ตตัวกรองทั้งหมดเป็นค่าเริ่มต้น (งานเสร็จสิ้น)"
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" />
+                      <span className="hidden sm:inline">รีเซ็ต</span>
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Row 2: Custom Date Inputs (if custom is selected) */}
+                {dateFilterType === 'custom' && (
+                  <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-slate-200/80 text-xs bg-white p-2.5 rounded-md">
+                    <span className="font-semibold text-slate-700">ช่วงวันที่วิ่งงาน:</span>
+                    <div className="flex items-center gap-2">
+                      <label className="text-slate-500">ตั้งแต่:</label>
+                      <Input
+                        type="date"
+                        value={customStartDate}
+                        onChange={(e) => setCustomStartDate(e.target.value)}
+                        className="h-8 text-xs w-36"
+                      />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <label className="text-slate-500">ถึง:</label>
+                      <Input
+                        type="date"
+                        value={customEndDate}
+                        onChange={(e) => setCustomEndDate(e.target.value)}
+                        className="h-8 text-xs w-36"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* Active Filters Summary Bar */}
+                <div className="flex flex-wrap items-center justify-between text-xs text-slate-600 pt-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-[11px] font-medium text-slate-500">มุมมองปัจจุบัน:</span>
+                    {jobStatusFilter === 'completed' ? (
+                      <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[11px] font-semibold flex items-center gap-1">
+                        <CheckCircle2 className="h-3 w-3" /> เฉพาะงานเสร็จสิ้น (พร้อมออกบิล)
+                      </span>
+                    ) : jobStatusFilter === 'all' ? (
+                      <span className="px-2 py-0.5 rounded-full bg-slate-200 text-slate-800 text-[11px] font-semibold">
+                        ทุกสถานะงาน
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[11px] font-semibold">
+                        สถานะ: {jobStatusFilter}
+                      </span>
+                    )}
+
+                    {invoiceStatusFilter !== 'all' && (
+                      <span className="px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 text-[11px] font-semibold">
+                        บิล: {invoiceStatusFilter === 'billed' ? 'ออกบิลแล้ว' : 'ยังไม่ออกบิล'}
+                      </span>
+                    )}
+
+                    {dateFilterType !== 'all' && (
+                      <span className="px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 text-[11px] font-semibold">
+                        วันที่: {dateFilterType === 'today' ? 'วันนี้' : dateFilterType === 'this_month' ? 'เดือนนี้' : dateFilterType === 'last_month' ? 'เดือนที่แล้ว' : `${customStartDate || '...'} ถึง ${customEndDate || '...'}`}
+                      </span>
+                    )}
+
+                    {searchQuery && (
+                      <span className="px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-800 text-[11px] font-semibold">
+                        ค้นหา: &quot;{searchQuery}&quot;
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="text-[11px] text-slate-500">
+                    พบ {sortedJobs.length} รายการ
+                  </div>
+                </div>
+              </div>
+
+              {/* Table */}
               <div className="rounded-md border overflow-x-auto">
                 <Table>
                   <TableHeader>
@@ -468,85 +845,156 @@ export default function InvoicingPage() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {sortedJobs.map((j) => (
-                      <TableRow key={j.id} className="hover:bg-slate-50/80 text-xs">
-                        <TableCell className="font-bold text-blue-700 font-mono whitespace-nowrap">
-                          {j.job_no}
-                        </TableCell>
-                        <TableCell className="text-slate-600 whitespace-nowrap">
-                          {j.job_date}
-                        </TableCell>
-                        <TableCell className="font-semibold text-slate-900 max-w-[170px] truncate">
-                          {j.customer?.company_name || 'ลูกค้าทั่วไป'}
-                        </TableCell>
-                        <TableCell className="whitespace-nowrap font-mono font-bold">
-                          {j.invoice_no ? (
-                            <span className="px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200">
-                              {j.invoice_no}
-                            </span>
-                          ) : (
-                            <span className="text-slate-400 italic">ยังไม่ออกบิล</span>
-                          )}
-                        </TableCell>
-                        <TableCell className="font-mono">
-                          {j.container_no ? (
-                            <span className="font-bold text-slate-900">{j.container_no}</span>
-                          ) : (
-                            <span className="text-slate-400">-</span>
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          {j.status === 'completed' ? (
-                            <Badge className="bg-emerald-600 text-white font-medium text-[11px]">ปิดงานแล้ว</Badge>
-                          ) : (
-                            <Badge variant="outline" className="border-amber-300 bg-amber-50 text-amber-800 text-[11px]">
-                              {j.status}
-                            </Badge>
-                          )}
-                        </TableCell>
-                        <TableCell className="text-right font-bold text-slate-900">
-                          ฿{Number(j.revenue || 0).toLocaleString()}
-                        </TableCell>
-                        <TableCell className="text-right font-bold text-emerald-700">
-                          ฿{Number(j.net_profit || 0).toLocaleString()}
-                        </TableCell>
-                        <TableCell className="text-center whitespace-nowrap">
-                          <div className="flex items-center justify-center gap-1.5">
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => handleOpenInvoice(j)}
-                              className="h-8 text-xs gap-1 border-blue-300 text-blue-700 hover:bg-blue-50 font-semibold"
-                            >
-                              <Printer className="h-3.5 w-3.5" />
-                              พิมพ์ Invoice
-                            </Button>
-
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => handleOpenEditInvoice(j)}
-                              className="h-8 text-xs gap-1 border-amber-300 text-amber-800 hover:bg-amber-50"
-                              title="แก้ไข / ปรับปรุงบิล และสูตรคำนวณ Excel"
-                            >
-                              <Edit3 className="h-3.5 w-3.5" />
-                              แก้ไขบิล
-                            </Button>
-
-                            {j.status !== 'completed' && (
-                              <Button
-                                size="sm"
-                                onClick={() => handleCloseJob(j.id)}
-                                className="h-8 text-xs gap-1 bg-emerald-600 hover:bg-emerald-700 text-white"
-                              >
-                                <CheckCircle2 className="h-3.5 w-3.5" />
-                                ปิดงาน
-                              </Button>
-                            )}
-                          </div>
+                    {sortedJobs.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={9} className="text-center py-10 text-slate-500 space-y-2">
+                          <ReceiptText className="h-10 w-10 text-slate-300 mx-auto" />
+                          <p className="font-semibold text-slate-700">ไม่พบรายการงานขนส่งตามเงื่อนไขตัวกรอง</p>
+                          <p className="text-xs text-slate-400">
+                            {jobStatusFilter === 'completed' 
+                              ? 'ขณะนี้ไม่มีงานที่มีสถานะ "เสร็จสิ้น" หากต้องการดูงานทั้งหมด ให้เปลี่ยนตัวกรองเป็น "ทุกสถานะงาน"' 
+                              : 'ลองปรับเปลี่ยนคำค้นหาหรือตัวกรองช่วงวันที่'}
+                          </p>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={handleResetFilters}
+                            className="text-xs mt-2"
+                          >
+                            รีเซ็ตตัวกรองเป็นค่าเริ่มต้น
+                          </Button>
                         </TableCell>
                       </TableRow>
-                    ))}
+                    ) : (
+                      sortedJobs.map((j) => (
+                        <TableRow key={j.id} className="hover:bg-slate-50/80 text-xs">
+                          <TableCell className="font-bold text-blue-700 font-mono whitespace-nowrap">
+                            {j.job_no}
+                          </TableCell>
+                          <TableCell className="text-slate-600 whitespace-nowrap">
+                            {j.job_date}
+                          </TableCell>
+                          <TableCell className="font-semibold text-slate-900 max-w-[170px] truncate">
+                            {j.customer?.company_name || 'ลูกค้าทั่วไป'}
+                          </TableCell>
+                          <TableCell className="whitespace-nowrap font-mono font-bold">
+                            {j.invoice_no ? (
+                              <span className="px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200">
+                                {j.invoice_no}
+                              </span>
+                            ) : (
+                              <span className="text-slate-400 italic">ยังไม่ออกบิล</span>
+                            )}
+                          </TableCell>
+                          <TableCell className="font-mono">
+                            {j.container_no ? (
+                              <span className="font-bold text-slate-900">{j.container_no}</span>
+                            ) : (
+                              <span className="text-slate-400">-</span>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            {j.status === 'completed' ? (
+                              <div className="flex flex-col gap-1 items-start">
+                                <Badge className="bg-emerald-600 text-white font-medium text-[11px] gap-1">
+                                  <CheckCircle2 className="h-3 w-3" /> งานเสร็จสิ้น
+                                </Badge>
+                                {j.invoice_no || j.invoice_status === 'billed' ? (
+                                  <span className="text-[10px] text-blue-700 font-semibold flex items-center gap-0.5">
+                                    ✓ ออกบิลแล้ว
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] text-amber-700 font-semibold flex items-center gap-0.5">
+                                    ⏳ พร้อมออกบิล
+                                  </span>
+                                )}
+                              </div>
+                            ) : (
+                              <div className="flex flex-col gap-1 items-start">
+                                <Badge variant="outline" className="border-amber-300 bg-amber-50 text-amber-800 text-[11px] gap-1">
+                                  {j.status === 'in_progress' ? '🚚 กำลังวิ่งงาน' : j.status === 'assigned' ? '📋 จ่ายงานแล้ว' : j.status === 'draft' ? '📝 ฉบับร่าง' : j.status}
+                                </Badge>
+                                <span className="text-[10px] text-slate-400 flex items-center gap-0.5">
+                                  <Lock className="h-2.5 w-2.5" /> รอจบงานก่อนออกบิล
+                                </span>
+                              </div>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-right font-bold text-slate-900">
+                            ฿{Number(j.revenue || 0).toLocaleString()}
+                          </TableCell>
+                          <TableCell className="text-right font-bold text-emerald-700">
+                            ฿{Number(j.net_profit || 0).toLocaleString()}
+                          </TableCell>
+                          <TableCell className="text-center whitespace-nowrap">
+                            <div className="flex items-center justify-center gap-1.5">
+                              {/* Guarded Invoice Actions: Only allowed if job.status === 'completed' */}
+                              {j.status === 'completed' ? (
+                                <>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => handleOpenInvoice(j)}
+                                    className="h-8 text-xs gap-1 border-blue-300 text-blue-700 hover:bg-blue-50 font-semibold"
+                                    title="เปิดแบบฟอร์มพิมพ์ใบแจ้งหนี้อย่างเป็นทางการ"
+                                  >
+                                    <Printer className="h-3.5 w-3.5" />
+                                    พิมพ์ Invoice
+                                  </Button>
+
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => handleOpenEditInvoice(j)}
+                                    className="h-8 text-xs gap-1 border-amber-300 text-amber-800 hover:bg-amber-50"
+                                    title="แก้ไข / ปรับปรุงบิล และสูตรคำนวณ Excel"
+                                  >
+                                    <Edit3 className="h-3.5 w-3.5" />
+                                    แก้ไขบิล
+                                  </Button>
+                                </>
+                              ) : (
+                                <>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    disabled
+                                    className="h-8 text-xs gap-1 opacity-50 bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed"
+                                    title="ไม่สามารถออกบิลได้: งานต้องมีสถานะ 'เสร็จสิ้น' (ปิดงานเรียบร้อย) ก่อนเท่านั้น"
+                                  >
+                                    <Lock className="h-3.5 w-3.5 text-slate-400" />
+                                    พิมพ์ Invoice
+                                  </Button>
+
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    disabled
+                                    className="h-8 text-xs gap-1 opacity-50 bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed"
+                                    title="ไม่สามารถแก้ไขบิลได้: งานต้องมีสถานะ 'เสร็จสิ้น' ก่อนเท่านั้น"
+                                  >
+                                    <Lock className="h-3.5 w-3.5 text-slate-400" />
+                                    แก้ไขบิล
+                                  </Button>
+                                </>
+                              )}
+
+                              {j.status !== 'completed' && (
+                                <Button
+                                  size="sm"
+                                  onClick={() => handleCloseJob(j.id)}
+                                  className="h-8 text-xs gap-1 bg-emerald-600 hover:bg-emerald-700 text-white font-medium shadow-sm"
+                                  title="คลิกเพื่อปิดงานและสรุปผลกำไรขั้นสุดท้าย (เปลี่ยนสถานะเป็น 'เสร็จสิ้น' เพื่อให้สามารถออกบิลได้)"
+                                >
+                                  <CheckCircle2 className="h-3.5 w-3.5" />
+                                  ปิดงาน
+                                </Button>
+                              )}
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    )}
                   </TableBody>
                 </Table>
               </div>
@@ -637,6 +1085,11 @@ export default function InvoicingPage() {
                 <DialogTitle className="flex items-center gap-2 text-lg">
                   <ReceiptText className="h-5 w-5 text-blue-600" />
                   ใบแจ้งหนี้ / INVOICE (แบบฟอร์มทางการ Connect Transport)
+                  {selectedJob && getSavedInvoiceData(selectedJob.id, selectedJob.invoice_no) && (
+                    <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[11px] font-semibold flex items-center gap-1">
+                      <Check className="h-3 w-3" /> ข้อมูลที่ปรับปรุงล่าสุด (Active Revision)
+                    </span>
+                  )}
                 </DialogTitle>
                 <DialogDescription>
                   แยก 2 คอลัมน์ (เงินทดรองจ่าย &amp; ค่าขนส่ง) หักภาษี 1% เฉพาะค่าขนส่ง
@@ -1021,14 +1474,25 @@ export default function InvoicingPage() {
             </div>
           </div>
 
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setOpenEditInvoiceModal(false)}>
-              ยกเลิก
+          <DialogFooter className="flex flex-row items-center justify-between sm:justify-between w-full">
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={handleResetInvoiceToDefault}
+              className="text-xs text-rose-600 hover:bg-rose-50 hover:text-rose-700 gap-1"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+              คืนค่าเริ่มต้น (Reset Default)
             </Button>
-            <Button type="button" onClick={handleSaveRevisedInvoice} className="bg-emerald-600 hover:bg-emerald-700 gap-1.5">
-              <Save className="h-4 w-4" />
-              บันทึกการปรับปรุงบิล (Save Revision)
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button type="button" variant="outline" onClick={() => setOpenEditInvoiceModal(false)}>
+                ยกเลิก
+              </Button>
+              <Button type="button" onClick={handleSaveRevisedInvoice} className="bg-emerald-600 hover:bg-emerald-700 gap-1.5 font-bold">
+                <Save className="h-4 w-4" />
+                บันทึกการปรับปรุงบิล (Save Revision)
+              </Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>

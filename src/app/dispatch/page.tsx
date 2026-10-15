@@ -30,7 +30,9 @@ import {
   Ship,
   Eye,
   AlertTriangle,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Calendar,
+  Anchor
 } from 'lucide-react';
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -55,6 +57,21 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+
+const jobTypeMap: Record<string, string> = {
+  heavy_to_open: 'ลากตู้หนักไปเปิด (Import)',
+  empty_to_stuff: 'ลากตู้เปล่าไปบรรจุ (Export)',
+  empty_return: 'ลากตู้เปล่าคืน',
+  yard_move: 'ย้ายลาน',
+};
+
+const vehicleTypeMap: Record<string, string> = {
+  '4_wheel': 'รถ 4 ล้อ',
+  '6_wheel': 'รถ 6 ล้อ',
+  '10_wheel': 'รถ 10 ล้อ',
+  trailer: 'รถเทรลเลอร์ (หัวลาก)',
+  semi_trailer: 'รถกึ่งพ่วง',
+};
 
 const statusConfig: Record<string, { label: string; badgeClass: string }> = {
   draft: { label: 'ฉบับร่าง', badgeClass: 'bg-slate-100 text-slate-700 border-slate-300' },
@@ -1105,130 +1122,281 @@ ${job.driver_notes ? `📝 หมายเหตุ/คำสั่งพิเ�
 
       {/* ================= MODAL: ASSIGN VEHICLE & DRIVER ================= */}
       <Dialog open={openAssignModal} onOpenChange={setOpenAssignModal}>
-        <DialogContent className="sm:max-w-[550px]">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Truck className="h-5 w-5 text-blue-600" />
-              จ่ายงานขนส่ง (Assign Truck &amp; Driver)
+        <DialogContent className="sm:max-w-[850px] max-h-[92vh] overflow-y-auto p-6">
+          <DialogHeader className="pb-3 border-b">
+            <DialogTitle className="text-xl font-bold flex items-center gap-2 text-slate-900">
+              <Truck className="h-6 w-6 text-blue-600" />
+              จ่ายงานขนส่งและจัดรถ (Assign Truck &amp; Driver)
             </DialogTitle>
-            <DialogDescription>
-              เลือกรหัสรถย่อ (เช่น รถคัน-1) เพื่อดึงคนขับประจำรถขึ้นมาให้อัตโนมัติทันที
+            <DialogDescription className="text-xs text-slate-500">
+              ตรวจสอบรายละเอียดงาน เส้นทาง 3 จุดตรวจ และวันเวลานัดหมาย เพื่อมอบหมายรถและ พขร. ที่เหมาะสม
             </DialogDescription>
           </DialogHeader>
 
-          <form onSubmit={handleSaveAssign} className="space-y-4 text-xs">
-            <div className="p-3 bg-slate-100 rounded-lg space-y-1">
-              <div>งาน: <strong className="font-mono text-blue-800">{selectedJob?.job_no}</strong> | ลูกค้า: <strong>{selectedJob?.customer?.company_name}</strong></div>
-              <div>Volume: <strong className="font-mono">{selectedJob?.container_amount || 1}x{selectedJob?.container_size}&apos; {selectedJob?.container_type}</strong> | สินค้า: {selectedJob?.commodity_name || 'ทั่วไป'}</div>
-            </div>
-
-            <div>
-              <Label className="text-xs font-bold text-blue-900">เลือกรถที่ต้องการจ่ายงาน *</Label>
-              <select
-                required
-                className="w-full border-2 border-blue-200 rounded-lg p-2.5 text-xs bg-white font-bold"
-                value={assignForm.vehicle_id}
-                onChange={(e) => handleVehicleChange(e.target.value)}
-              >
-                <option value="">-- เลือกรถ --</option>
-                {vehicles.map((v) => (
-                  <option key={v.id} value={v.id}>
-                    {v.truck_name_id || 'รถ'} ({v.plate_number}) - {v.truck_brand} {v.truck_model}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Auto-paired Driver with manual override option */}
-            {(() => {
-              const selectedVeh = vehicles.find((v) => v.id === assignForm.vehicle_id);
-              return (
-                <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg space-y-2">
-                  <div className="font-bold text-emerald-900 flex items-center justify-between text-xs">
-                    <span className="flex items-center gap-1.5">
-                      <UserCheck className="h-4 w-4 text-emerald-600" />
-                      พนักงานขับรถ (พขร.) *:
-                    </span>
-                    <span className="text-[11px] text-emerald-700 font-normal">
-                      (ดึงอัตโนมัติ หรือเลือกเปลี่ยนคนขับได้)
-                    </span>
-                  </div>
-                  <select
-                    required
-                    className="w-full border rounded-lg p-2 text-xs bg-white font-medium"
-                    value={assignForm.driver_id}
-                    onChange={(e) => handleDriverChange(e.target.value)}
+          <form onSubmit={handleSaveAssign} className="space-y-5 pt-2">
+            {/* 1. COMPREHENSIVE JOB OVERVIEW CARD */}
+            <div className="bg-slate-50 border-2 border-slate-200 rounded-xl p-4 space-y-3.5 shadow-xs">
+              {/* Row 1: Job ID, Status, Job Date */}
+              <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-200">
+                <div className="flex items-center gap-2.5">
+                  <span className="font-mono font-black text-lg text-blue-800 bg-blue-100 px-3 py-1 rounded-lg border border-blue-200">
+                    {selectedJob?.job_no}
+                  </span>
+                  <Badge 
+                    variant="outline" 
+                    className={`font-semibold text-xs px-2.5 py-0.5 ${statusConfig[selectedJob?.status || 'draft']?.badgeClass || ''}`}
                   >
-                    <option value="">-- เลือกคนขับ --</option>
-                    {drivers.map((d) => {
-                      const isPaired = selectedVeh?.driver_id === d.id || selectedVeh?.driver?.id === d.id;
-                      return (
-                        <option key={d.id} value={d.id}>
-                          {d.name} {d.phone ? `(${d.phone})` : ''} {isPaired ? '⭐ [คนขับประจำรถคันนี้]' : ''}
-                        </option>
-                      );
-                    })}
-                  </select>
-                  <div className="text-slate-600 text-[11px]">
-                    เบอร์โทรติดต่อ: <strong className="font-mono text-slate-800">{assignForm.driver_phone || '-'}</strong>
+                    {statusConfig[selectedJob?.status || 'draft']?.label || selectedJob?.status}
+                  </Badge>
+                  <span className="text-xs font-semibold px-2.5 py-0.5 rounded bg-slate-200 text-slate-800">
+                    {jobTypeMap[selectedJob?.job_type || ''] || selectedJob?.job_type}
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-1.5 text-sm font-bold text-amber-950 bg-amber-100/80 px-3 py-1 rounded-lg border border-amber-300">
+                  <Calendar className="h-4 w-4 text-amber-700" />
+                  วันที่วิ่งงาน: <span className="font-mono">{selectedJob?.job_date}</span>
+                </div>
+              </div>
+
+              {/* Row 2: Customer, Shipping Line, Booking, Volume */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+                <div className="p-2.5 bg-white rounded-lg border space-y-1">
+                  <span className="text-xs text-slate-500 font-medium">ลูกค้าผู้ว่าจ้าง:</span>
+                  <div className="font-black text-slate-900 text-base truncate" title={selectedJob?.customer?.company_name}>
+                    {selectedJob?.customer?.company_name || 'ลูกค้าทั่วไป'}
+                  </div>
+                  <div className="text-xs text-slate-600 truncate">
+                    สินค้า: <strong className="text-slate-800">{selectedJob?.commodity_name || 'สินค้าทั่วไป'}</strong>
                   </div>
                 </div>
-              );
-            })()}
 
-            {/* Container No & Seal No (Optional at dispatch time) */}
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <Label className="text-xs">หมายเลขตู้ (Container No.)</Label>
-                <Input
-                  placeholder="เช่น TGHU9482710 (ถ้าทราบแล้ว)"
-                  value={assignForm.container_no}
-                  onChange={(e) => setAssignForm({ ...assignForm, container_no: e.target.value })}
-                  className="font-mono text-xs uppercase"
-                />
+                <div className="p-2.5 bg-white rounded-lg border space-y-1">
+                  <span className="text-xs text-slate-500 font-medium">สายเรือ &amp; เอกสาร:</span>
+                  <div className="font-bold text-blue-800 text-sm flex items-center gap-1">
+                    <Ship className="h-4 w-4 shrink-0 text-blue-600" />
+                    {selectedJob?.ship_line || '-'}
+                  </div>
+                  <div className="text-xs font-mono">
+                    <span className="text-slate-500 font-sans">Booking:</span> <strong className="text-slate-900">{selectedJob?.book_no || '-'}</strong>
+                    {selectedJob?.bl_no && (
+                      <span className="ml-2 text-slate-500 font-sans">B/L: <strong className="text-slate-700">{selectedJob.bl_no}</strong></span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="p-2.5 bg-white rounded-lg border space-y-1">
+                  <span className="text-xs text-slate-500 font-medium">สเปก &amp; จำนวนตู้ (Volume):</span>
+                  <div>
+                    <span className="font-mono font-black text-sm text-blue-900 bg-blue-50 px-2.5 py-1 rounded border border-blue-200 inline-flex items-center gap-1">
+                      <Box className="h-4 w-4 text-blue-600" />
+                      {selectedJob?.container_amount || 1} x {selectedJob?.container_size}&apos; {selectedJob?.container_type}
+                    </span>
+                  </div>
+                  {selectedJob?.pat_letter_required && (
+                    <div className="text-[11px] text-purple-700 font-semibold flex items-center gap-1">
+                      <Anchor className="h-3 w-3" /> ต้องทำจดหมายการท่าเรือ (PAT)
+                    </div>
+                  )}
+                </div>
               </div>
+
+              {/* Row 3: 3-Point Operational Route (Pickup -> Packing -> Return) */}
+              <div className="space-y-1.5 pt-1">
+                <div className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                  <MapPin className="h-4 w-4 text-blue-600" />
+                  กำหนดการเดินทางและเส้นทาง 3 จุดตรวจ:
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  {/* Point 1: Pickup */}
+                  <div className="p-3 bg-blue-50/80 rounded-xl border border-blue-200 space-y-1">
+                    <div className="text-xs font-bold text-blue-900 flex items-center justify-between">
+                      <span>1. สถานที่ลากตู้ (รับตู้)</span>
+                      <span className="text-[10px] bg-blue-200 text-blue-800 px-1.5 py-0.2 rounded font-semibold">Pickup</span>
+                    </div>
+                    <div className="font-bold text-sm text-blue-950 truncate" title={selectedJob?.pickup_place || selectedJob?.origin?.name || '-'}>
+                      {selectedJob?.pickup_place || selectedJob?.origin?.name || '-'}
+                    </div>
+                    <div className="text-xs text-blue-800 font-semibold flex items-center gap-1 pt-0.5">
+                      <Calendar className="h-3.5 w-3.5 text-blue-600" />
+                      วันที่ลากตู้: <span className="font-mono font-bold">{selectedJob?.pickup_date || selectedJob?.job_date}</span>
+                    </div>
+                  </div>
+
+                  {/* Point 2: Packing */}
+                  <div className="p-3 bg-amber-50/80 rounded-xl border border-amber-200 space-y-1">
+                    <div className="text-xs font-bold text-amber-900 flex items-center justify-between">
+                      <span>2. สถานที่บรรจุสินค้า</span>
+                      <span className="text-[10px] bg-amber-200 text-amber-800 px-1.5 py-0.2 rounded font-semibold">Packing</span>
+                    </div>
+                    <div className="font-bold text-sm text-amber-950 truncate" title={selectedJob?.packing_place || 'โรงงานลูกค้า'}>
+                      {selectedJob?.packing_place || 'โรงงานลูกค้า'}
+                    </div>
+                    <div className="text-xs text-amber-800 font-semibold flex items-center gap-1 pt-0.5">
+                      <Calendar className="h-3.5 w-3.5 text-amber-600" />
+                      วันที่บรรจุ: <span className="font-mono font-bold">{selectedJob?.packing_date || selectedJob?.job_date}</span>
+                    </div>
+                  </div>
+
+                  {/* Point 3: Return */}
+                  <div className="p-3 bg-emerald-50/80 rounded-xl border border-emerald-200 space-y-1">
+                    <div className="text-xs font-bold text-emerald-900 flex items-center justify-between">
+                      <span>3. สถานที่คืนตู้</span>
+                      <span className="text-[10px] bg-emerald-200 text-emerald-800 px-1.5 py-0.2 rounded font-semibold">Return</span>
+                    </div>
+                    <div className="font-bold text-sm text-emerald-950 truncate" title={selectedJob?.return_place || selectedJob?.destination?.name || '-'}>
+                      {selectedJob?.return_place || selectedJob?.destination?.name || '-'}
+                    </div>
+                    <div className="text-xs text-emerald-800 font-semibold flex items-center gap-1 pt-0.5">
+                      <Calendar className="h-3.5 w-3.5 text-emerald-600" />
+                      วันที่คืนตู้: <span className="font-mono font-bold">{selectedJob?.return_date || selectedJob?.job_date}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Row 4: Notes / Instructions (if any) */}
+              {selectedJob?.driver_notes && (
+                <div className="p-2.5 bg-yellow-50 border border-yellow-200 rounded-lg text-xs text-yellow-900 flex items-start gap-1.5">
+                  <AlertTriangle className="h-4 w-4 text-yellow-600 shrink-0 mt-0.5" />
+                  <div>
+                    <strong className="font-semibold">คำสั่งพิเศษ / หมายเหตุหน้างาน:</strong> {selectedJob.driver_notes}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* 2. DISPATCH ASSIGNMENT SECTION (TRUCK & DRIVER SELECTION) */}
+            <div className="space-y-4 border-t pt-4">
+              <div className="font-bold text-base text-slate-900 flex items-center gap-2">
+                <Truck className="h-5 w-5 text-blue-600" />
+                จัดสรรรถและพนักงานขับรถ (Truck &amp; Driver Assignment)
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* Truck Select */}
+                <div>
+                  <Label className="text-sm font-bold text-blue-900 mb-1.5 block">
+                    เลือกรถที่ต้องการจ่ายงาน *
+                  </Label>
+                  <select
+                    required
+                    className="w-full border-2 border-blue-300 focus:border-blue-500 rounded-xl px-3 h-11 text-sm bg-white font-bold text-slate-900 shadow-xs"
+                    value={assignForm.vehicle_id}
+                    onChange={(e) => handleVehicleChange(e.target.value)}
+                  >
+                    <option value="">-- เลือกรถ --</option>
+                    {vehicles.map((v) => (
+                      <option key={v.id} value={v.id}>
+                        {v.truck_name_id || 'รถ'} ({v.plate_number}) - {v.truck_brand} {v.truck_model} [{vehicleTypeMap[v.vehicle_type] || v.vehicle_type}]
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Driver Select */}
+                {(() => {
+                  const selectedVeh = vehicles.find((v) => v.id === assignForm.vehicle_id);
+                  return (
+                    <div>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <Label className="text-sm font-bold text-emerald-900">
+                          พนักงานขับรถ (พขร.) *
+                        </Label>
+                        <span className="text-[11px] text-emerald-700 font-medium">
+                          (ดึงอัตโนมัติ / สลับคนขับได้)
+                        </span>
+                      </div>
+                      <select
+                        required
+                        className="w-full border-2 border-emerald-300 focus:border-emerald-500 rounded-xl px-3 h-11 text-sm bg-white font-bold text-slate-900 shadow-xs"
+                        value={assignForm.driver_id}
+                        onChange={(e) => handleDriverChange(e.target.value)}
+                      >
+                        <option value="">-- เลือกคนขับ --</option>
+                        {drivers.map((d) => {
+                          const isPaired = selectedVeh?.driver_id === d.id || selectedVeh?.driver?.id === d.id;
+                          return (
+                            <option key={d.id} value={d.id}>
+                              {d.name} {d.phone ? `(${d.phone})` : ''} {isPaired ? '⭐ [คนขับประจำรถคันนี้]' : ''}
+                            </option>
+                          );
+                        })}
+                      </select>
+                      <div className="text-xs text-slate-600 mt-1 flex items-center justify-between">
+                        <span>เบอร์โทรศัพท์: <strong className="font-mono text-slate-900">{assignForm.driver_phone || '-'}</strong></span>
+                        {assignForm.driver_name && (
+                          <span className="text-emerald-700 font-semibold text-[11px]">พขร. พร้อมวิ่งงาน</span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+
+              {/* Container No & Seal No (Optional at dispatch time) */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
+                <div>
+                  <Label className="text-xs font-semibold text-slate-700 mb-1 block">
+                    หมายเลขตู้ (Container No.)
+                  </Label>
+                  <Input
+                    placeholder="เช่น TGHU9482710 (ถ้าทราบแล้ว)"
+                    value={assignForm.container_no}
+                    onChange={(e) => setAssignForm({ ...assignForm, container_no: e.target.value })}
+                    className="font-mono text-sm uppercase h-10 font-bold"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs font-semibold text-slate-700 mb-1 block">
+                    หมายเลขซีล (Seal No.)
+                  </Label>
+                  <Input
+                    placeholder="เช่น EMCA291834 (ถ้าทราบแล้ว)"
+                    value={assignForm.seal_no}
+                    onChange={(e) => setAssignForm({ ...assignForm, seal_no: e.target.value })}
+                    className="font-mono text-sm uppercase h-10 font-bold"
+                  />
+                </div>
+              </div>
+
+              {/* Job Status */}
               <div>
-                <Label className="text-xs">หมายเลขซีล (Seal No.)</Label>
-                <Input
-                  placeholder="เช่น EMCA291834 (ถ้าทราบแล้ว)"
-                  value={assignForm.seal_no}
-                  onChange={(e) => setAssignForm({ ...assignForm, seal_no: e.target.value })}
-                  className="font-mono text-xs uppercase"
-                />
+                <Label className="text-xs font-semibold text-slate-700 mb-1 block">
+                  ปรับสถานะงานขนส่ง
+                </Label>
+                <select
+                  className="w-full border rounded-lg px-3 h-10 text-sm bg-white font-medium"
+                  value={assignForm.status}
+                  onChange={(e) => setAssignForm({ ...assignForm, status: e.target.value })}
+                >
+                  <option value="assigned">มอบหมายแล้ว (Assigned)</option>
+                  <option value="in_progress">กำลังวิ่งงาน (In Progress)</option>
+                  <option value="draft">ฉบับร่าง (Draft)</option>
+                </select>
+              </div>
+
+              {/* Quick Line Copy */}
+              <div className="pt-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={copyLineToClipboard}
+                  className="w-full gap-2 text-emerald-800 border-2 border-emerald-300 bg-emerald-50 hover:bg-emerald-100 h-11 text-sm font-bold shadow-xs"
+                >
+                  {copiedLine ? <Check className="h-5 w-5 text-emerald-600" /> : <Copy className="h-5 w-5 text-emerald-600" />}
+                  {copiedLine ? 'คัดลอกข้อความสรุปงานแล้ว!' : 'คัดลอกสรุปงานส่ง LINE ให้ พขร.'}
+                </Button>
               </div>
             </div>
 
-            <div>
-              <Label className="text-xs font-bold">ปรับสถานะงาน</Label>
-              <select
-                className="w-full border rounded-lg p-2 text-xs bg-white"
-                value={assignForm.status}
-                onChange={(e) => setAssignForm({ ...assignForm, status: e.target.value })}
-              >
-                <option value="assigned">มอบหมายแล้ว (Assigned)</option>
-                <option value="in_progress">กำลังวิ่งงาน (In Progress)</option>
-                <option value="draft">ฉบับร่าง (Draft)</option>
-              </select>
-            </div>
-
-            {/* Quick Line Copy */}
-            <div className="pt-2 border-t">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={copyLineToClipboard}
-                className="w-full gap-2 text-emerald-800 border-emerald-300 hover:bg-emerald-50 h-9 font-semibold"
-              >
-                {copiedLine ? <Check className="h-4 w-4 text-emerald-600" /> : <Copy className="h-4 w-4 text-emerald-600" />}
-                {copiedLine ? 'คัดลอกข้อความสรุปงานแล้ว!' : 'คัดลอกสรุปงานส่ง LINE ให้ พขร.'}
-              </Button>
-            </div>
-
-            <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setOpenAssignModal(false)}>
+            <DialogFooter className="pt-4 border-t gap-2 sm:gap-0">
+              <Button type="button" variant="outline" onClick={() => setOpenAssignModal(false)} className="h-11 px-5 text-sm">
                 ยกเลิก
               </Button>
-              <Button type="submit" className="bg-blue-600 hover:bg-blue-700">
+              <Button type="submit" className="bg-blue-600 hover:bg-blue-700 h-11 px-8 text-sm font-bold shadow-md gap-1.5">
+                <CheckCircle2 className="h-4 w-4" />
                 บันทึกจ่ายงาน
               </Button>
             </DialogFooter>

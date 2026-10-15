@@ -25,7 +25,12 @@ import {
   Calendar,
   ExternalLink,
   ShieldCheck,
-  CreditCard
+  CreditCard,
+  Search,
+  Navigation,
+  Crosshair,
+  Copy,
+  Check
 } from 'lucide-react';
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -67,6 +72,24 @@ const locationTypeMap: Record<string, string> = {
   'yard': 'ลานจอด/ลานซ่อม',
   'other': 'อื่นๆ',
 };
+
+// Google Maps URL Resolver Helper
+function getGoogleMapsUrl(locationMap?: string | null, name?: string | null, province?: string | null): string {
+  if (locationMap && locationMap.trim()) {
+    const trimmed = locationMap.trim();
+    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+      return trimmed;
+    }
+    // Check if it's coordinates e.g. "13.1234, 100.5678"
+    const coordMatch = trimmed.match(/^[-+]?([1-8]?\d(\.\d+)?|90(\.0+)?)[,\s]+[-+]?(180(\.0+)?|((1[0-7]\d)|([1-9]?\d))(\.\d+)?)$/);
+    if (coordMatch) {
+      return `https://www.google.com/maps?q=${encodeURIComponent(trimmed.replace(/\s+/g, ''))}`;
+    }
+    return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(trimmed)}`;
+  }
+  const searchQuery = [name, province, 'ประเทศไทย'].filter(Boolean).join(' ');
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(searchQuery)}`;
+}
 
 // CSV Export Helper
 function exportToCsv(filename: string, headers: string[], rows: (string | number)[][]) {
@@ -216,6 +239,8 @@ export default function MasterDataPage() {
     location_map: '',
     location_remark: '',
   });
+
+  const [fetchingGps, setFetchingGps] = useState(false);
 
   const [rateCardForm, setRateCardForm] = useState({
     customer_id: '',
@@ -601,6 +626,31 @@ export default function MasterDataPage() {
       location_remark: l.location_remark || '',
     });
     setOpenLocationModal(true);
+  };
+
+  const handleGetCurrentLocation = () => {
+    if (typeof window === 'undefined' || !navigator.geolocation) {
+      alert('เบราว์เซอร์ไม่รองรับการดึงพิกัด Geolocation');
+      return;
+    }
+    setFetchingGps(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setFetchingGps(false);
+        const coords = `${pos.coords.latitude.toFixed(6)}, ${pos.coords.longitude.toFixed(6)}`;
+        setLocationForm((prev) => ({ ...prev, location_map: coords }));
+      },
+      (err) => {
+        setFetchingGps(false);
+        alert('ไม่สามารถดึงพิกัดได้: ' + err.message);
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  };
+
+  const handleOpenGoogleMapsToPick = () => {
+    const url = getGoogleMapsUrl(locationForm.location_map, locationForm.name, locationForm.province);
+    window.open(url, '_blank', 'noopener,noreferrer');
   };
 
   const handleSaveLocation = async (e: React.FormEvent) => {
@@ -1214,13 +1264,32 @@ export default function MasterDataPage() {
                             <div>{l.contact_name || '-'}</div>
                             <div className="text-slate-400 text-[11px]">{l.phone || '-'}</div>
                           </TableCell>
-                          <TableCell className="text-xs font-mono text-blue-600">
+                          <TableCell className="text-xs">
                             {l.location_map ? (
-                              <span className="flex items-center gap-1">
-                                <MapPin className="h-3 w-3" />
-                                {l.location_map}
-                              </span>
-                            ) : '-'}
+                              <a
+                                href={getGoogleMapsUrl(l.location_map, l.name, l.province)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-blue-50 text-blue-700 hover:bg-blue-100 hover:text-blue-900 border border-blue-200 transition-all font-mono text-[11px] font-medium group"
+                                title="คลิกเพื่อเปิดดูตำแหน่งจริงบน Google Maps (เปิดแท็บใหม่)"
+                              >
+                                <MapPin className="h-3.5 w-3.5 text-rose-500 shrink-0 group-hover:scale-110 transition-transform" />
+                                <span className="truncate max-w-[130px]">{l.location_map}</span>
+                                <ExternalLink className="h-3 w-3 text-blue-500 shrink-0 opacity-70 group-hover:opacity-100" />
+                              </a>
+                            ) : (
+                              <a
+                                href={getGoogleMapsUrl(null, l.name, l.province)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] text-slate-500 hover:text-blue-700 hover:bg-slate-100 transition-colors"
+                                title="ยังไม่ระบุพิกัด - คลิกเพื่อค้นหาบน Google Maps และคัดลอกพิกัดมาใส่"
+                              >
+                                <Search className="h-3 w-3 text-slate-400" />
+                                <span>ค้นหาบน Maps</span>
+                                <ExternalLink className="h-2.5 w-2.5 text-slate-400" />
+                              </a>
+                            )}
                           </TableCell>
                           <TableCell className="text-xs text-slate-600">{l.location_remark || '-'}</TableCell>
                           <TableCell className="text-right whitespace-nowrap">
@@ -1775,11 +1844,11 @@ export default function MasterDataPage() {
 
       {/* ================= MODAL: LOCATION (ADD / EDIT) ================= */}
       <Dialog open={openLocationModal} onOpenChange={setOpenLocationModal}>
-        <DialogContent className="sm:max-w-[600px]">
+        <DialogContent className="sm:max-w-[640px] max-h-[92vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{editLocationId ? 'แก้ไขสถานที่' : 'เพิ่มสถานที่ใหม่'}</DialogTitle>
             <DialogDescription>
-              ลานฝากตู้, ท่าเรือ (PAT / แหลมฉบัง), โรงงานลูกค้า พร้อมพิกัด GPS
+              ลานฝากตู้, ท่าเรือ (PAT / แหลมฉบัง), โรงงานลูกค้า พร้อมพิกัด GPS และแผนที่ดาวเทียม
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={handleSaveLocation} className="space-y-4">
@@ -1809,22 +1878,104 @@ export default function MasterDataPage() {
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
-                <Label className="text-xs">จังหวัด</Label>
+                <Label className="text-xs font-medium">จังหวัด</Label>
                 <Input
-                  placeholder="กรุงเทพฯ, ชลบุรี"
+                  placeholder="กรุงเทพฯ, ชลบุรี, ฉะเชิงเทรา"
                   value={locationForm.province}
                   onChange={(e) => setLocationForm({ ...locationForm, province: e.target.value })}
                 />
               </div>
               <div>
-                <Label className="text-xs font-bold text-blue-800">พิกัด GPS / แผนที่</Label>
-                <Input
-                  placeholder="เช่น 13.7082, 100.5786 หรือ Maps link"
-                  value={locationForm.location_map}
-                  onChange={(e) => setLocationForm({ ...locationForm, location_map: e.target.value })}
+                <div className="flex items-center justify-between mb-1">
+                  <Label className="text-xs font-bold text-blue-900 flex items-center gap-1">
+                    <MapPin className="h-3.5 w-3.5 text-rose-500" />
+                    พิกัด GPS / ลิงก์ Google Maps
+                  </Label>
+                  <button
+                    type="button"
+                    onClick={handleGetCurrentLocation}
+                    disabled={fetchingGps}
+                    className="text-[11px] text-blue-600 hover:text-blue-800 font-medium flex items-center gap-1 transition-colors"
+                    title="ดึงพิกัด GPS ละติจูด, ลองจิจูด จากตำแหน่งปัจจุบันของอุปกรณ์คุณ"
+                  >
+                    <Crosshair className={`h-3 w-3 ${fetchingGps ? 'animate-spin text-amber-500' : ''}`} />
+                    <span>{fetchingGps ? 'กำลังอ่านพิกัด...' : 'ใช้ GPS ปัจจุบัน'}</span>
+                  </button>
+                </div>
+                <div className="relative flex items-center">
+                  <Input
+                    placeholder="เช่น 13.7082, 100.5786 หรือวาง Maps Link"
+                    value={locationForm.location_map}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      const atMatch = val.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
+                      const qMatch = val.match(/[?&]q=(-?\d+\.\d+),(-?\d+\.\d+)/);
+                      if (atMatch) {
+                        setLocationForm({ ...locationForm, location_map: `${atMatch[1]}, ${atMatch[2]}` });
+                      } else if (qMatch) {
+                        setLocationForm({ ...locationForm, location_map: `${qMatch[1]}, ${qMatch[2]}` });
+                      } else {
+                        setLocationForm({ ...locationForm, location_map: val });
+                      }
+                    }}
+                    className="pr-20 text-xs font-mono"
+                  />
+                  <div className="absolute right-1 flex items-center gap-1">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      onClick={handleOpenGoogleMapsToPick}
+                      className="h-7 px-2 text-[11px] text-blue-700 hover:bg-blue-50 gap-1 font-medium"
+                      title="เปิด Google Maps เพื่อดูหรือค้นหาจุดปักหมุด"
+                    >
+                      <span>เปิด Maps</span>
+                      <ExternalLink className="h-3 w-3" />
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Embedded Live Google Maps Preview & Pin Picker helper */}
+            <div className="rounded-lg border border-slate-200 overflow-hidden bg-slate-50">
+              <div className="flex items-center justify-between px-3 py-1.5 bg-slate-100/90 border-b text-[11px]">
+                <span className="font-semibold flex items-center gap-1.5 text-slate-700">
+                  <MapPin className="h-3.5 w-3.5 text-rose-500" />
+                  พรีวิวแผนที่ Google Maps (Live Interactive Preview)
+                </span>
+                <button
+                  type="button"
+                  onClick={handleOpenGoogleMapsToPick}
+                  className="text-blue-600 hover:text-blue-800 hover:underline flex items-center gap-1 font-semibold transition-colors"
+                >
+                  <span>เปิด Google Maps เต็มจอเพื่อเลือกจุด</span>
+                  <ExternalLink className="h-3 w-3" />
+                </button>
+              </div>
+              <div className="relative w-full h-[160px] bg-slate-200">
+                <iframe
+                  title="Google Map Live Preview"
+                  width="100%"
+                  height="100%"
+                  style={{ border: 0 }}
+                  loading="lazy"
+                  allowFullScreen
+                  referrerPolicy="no-referrer-when-downgrade"
+                  src={`https://maps.google.com/maps?q=${encodeURIComponent(
+                    locationForm.location_map || `${locationForm.name} ${locationForm.province || ''}` || 'ประเทศไทย'
+                  )}&t=&z=14&ie=UTF8&iwloc=&output=embed`}
                 />
+              </div>
+              <div className="p-2 bg-white text-[11px] text-slate-500 border-t flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                <span>📍 <strong>วิธีปักหมุด:</strong> คลิก &quot;เปิด Google Maps เต็มจอ&quot; ➔ คลิกขวาที่จุดบนแผนที่ ➔ คลิกตัวเลขพิกัดเพื่อคัดลอก (Copy) ➔ นำมาวางที่ช่องด้านบน</span>
+                {locationForm.location_map && (
+                  <span className="text-emerald-700 font-medium whitespace-nowrap bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                    ✓ กำหนดพิกัดแล้ว
+                  </span>
+                )}
               </div>
             </div>
 

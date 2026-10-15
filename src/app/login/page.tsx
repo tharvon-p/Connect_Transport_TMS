@@ -57,10 +57,14 @@ export default function LoginPage() {
 
       {/* Brand Header */}
       <div className="sm:mx-auto sm:w-full sm:max-w-md text-center z-10">
-        <div className="inline-flex items-center justify-center bg-blue-600 p-3 rounded-2xl shadow-lg mb-3">
-          <Truck className="h-8 w-8 text-white" />
+        <div className="inline-flex items-center justify-center bg-white px-6 py-3.5 rounded-2xl shadow-2xl mb-3 border border-slate-700/50">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img 
+            src="/images/logo.png" 
+            alt="Connect Transport Co., Ltd." 
+            className="h-12 w-auto object-contain"
+          />
         </div>
-        <h1 className="text-2xl sm:text-3xl font-black text-white tracking-tight">Connect Transport</h1>
         <p className="text-sm text-blue-400 font-medium mt-1">
           TMS Container Haulage &amp; Logistics Management
         </p>

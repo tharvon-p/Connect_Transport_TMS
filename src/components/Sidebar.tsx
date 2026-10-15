@@ -43,42 +43,40 @@ export function Sidebar() {
   return (
     <aside className="w-64 bg-slate-900 text-slate-100 flex flex-col shrink-0 min-h-screen border-r border-slate-800">
       {/* Brand Header */}
-      <div className="p-4 border-b border-slate-800 flex items-center gap-3">
-        <div className="bg-blue-600 p-2 rounded-lg text-white shadow-md">
-          <Truck className="h-6 w-6" />
+      <div className="p-4 border-b border-slate-800">
+        <div className="bg-white p-2.5 rounded-xl shadow-md flex items-center justify-center">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img 
+            src="/images/logo.png" 
+            alt="Connect Transport Co., Ltd." 
+            className="h-10 w-auto object-contain"
+          />
         </div>
-        <div>
-          <h1 className="font-bold text-base tracking-wide text-white leading-tight">Connect Transport</h1>
-          <p className="text-xs text-blue-400 font-medium">TMS Container Logistics</p>
+        <div className="mt-2 text-center">
+          <p className="text-[11px] text-blue-400 font-semibold tracking-wider uppercase">TMS Logistics System</p>
         </div>
       </div>
 
-      {/* Role Switcher Box */}
+      {/* Current Active User Profile (No dropdown - Login-based RBAC) */}
       <div className="p-3 border-b border-slate-800 bg-slate-950/60">
-        <div className="flex items-center justify-between text-[11px] text-slate-400 font-semibold mb-1.5 uppercase tracking-wider">
-          <span className="flex items-center gap-1">
+        <div className="flex items-center justify-between text-[11px] text-slate-400 font-semibold mb-2 uppercase tracking-wider">
+          <span className="flex items-center gap-1.5">
             <UserCheck className="h-3.5 w-3.5 text-blue-400" />
-            ผู้ใช้งานปัจจุบัน (Active User)
+            ผู้ใช้งานระบบ (Current User)
           </span>
-        </div>
-
-        <select
-          value={currentUser.id}
-          onChange={(e) => switchUser(e.target.value)}
-          className="w-full bg-slate-800 border border-slate-700 text-white rounded-lg px-2.5 py-1.5 text-xs font-medium focus:outline-hidden focus:ring-1 focus:ring-blue-500 cursor-pointer"
-        >
-          {users.map((u) => (
-            <option key={u.id} value={u.id}>
-              {u.avatar} {u.name}
-            </option>
-          ))}
-        </select>
-
-        <div className="mt-2 flex items-center justify-between">
-          <span className="text-[11px] text-slate-400 truncate max-w-[120px]">{currentUser.title}</span>
           <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold border ${currentRole?.badgeColor || ''}`}>
             {currentRole?.name.split(' ')[0] || 'ROLE'}
           </span>
+        </div>
+
+        <div className="bg-slate-800/80 border border-slate-700/80 rounded-lg p-2.5 flex items-center gap-2.5">
+          <div className="text-xl bg-slate-700/60 h-8 w-8 rounded-full flex items-center justify-center shrink-0">
+            {currentUser.avatar}
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="text-xs font-bold text-white truncate">{currentUser.name}</div>
+            <div className="text-[11px] text-blue-300 truncate">{currentUser.title}</div>
+          </div>
         </div>
       </div>
 

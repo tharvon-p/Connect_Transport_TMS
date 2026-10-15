@@ -445,22 +445,37 @@ export default function InvoicingPage() {
           {/* Printable Invoice Sheet */}
           <div className="border-2 border-slate-900 p-8 rounded-lg bg-white text-slate-900 space-y-5 print:border-none print:p-0">
             {/* Header */}
-            <div className="border-b-2 border-slate-900 pb-4 flex justify-between items-start">
-              <div>
-                <h2 className="text-xl font-black text-slate-900">บริษัท คอนเนค ทรานสปอร์ต จำกัด</h2>
-                <p className="text-xs font-semibold text-blue-900">CONNECT TRANSPORT CO., LTD.</p>
-                <p className="text-xs text-slate-600 mt-1">
-                  88/9 หมู่ 2 ถนนบางนา-ตราด ต.บางเสาธง อ.บางเสาธง จ.สมุทรปราการ 10570
-                </p>
-                <p className="text-xs text-slate-600">เลขประจำตัวผู้เสียภาษี: 0105562099881 | โทร: 02-765-4321</p>
+            <div className="border-b-2 border-slate-900 pb-4 flex justify-between items-start gap-4">
+              <div className="flex items-start gap-4">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img 
+                  src="/images/logo-print.png" 
+                  alt="Connect Transport Logo" 
+                  className="h-14 w-auto object-contain mt-1" 
+                />
+                <div>
+                  <h2 className="text-lg font-black text-slate-900 leading-tight">
+                    บริษัท คอนเนค ทรานสปอร์ต จำกัด <span className="text-xs font-bold text-slate-600">( สาขาที่ 00001 )</span>
+                  </h2>
+                  <p className="text-xs font-bold text-blue-900">CONNECT TRANSPORT CO.,LTD.</p>
+                  <p className="text-[11px] text-slate-600 mt-0.5 leading-snug">
+                    369/1 ถนนเลียบคลองมอญ แขวงทับยาว เขตลาดกระบัง กรุงเทพฯ 10520<br />
+                    369/1 LIAP KHLONG MON ROAD, THAP YAO, LAT KRABANG, BANGKOK 10520
+                  </p>
+                  <p className="text-[11px] text-slate-600 mt-0.5">
+                    TEL : 089-5351313 &nbsp;|&nbsp; FAX : 02-1167337 &nbsp;|&nbsp; E-MAIL : yodsapol@connecttransport.co.th
+                  </p>
+                  <p className="text-[11px] font-bold text-slate-800 mt-0.5">
+                    เลขประจำตัวผู้เสียภาษี 0115557007317
+                  </p>
+                </div>
               </div>
-              <div className="text-right">
-                <div className="text-xl font-black text-slate-900">ใบแจ้งหนี้ / ใบวางบิล</div>
-                <p className="text-xs text-slate-500 font-mono">INVOICE / BILLING NOTE</p>
-                <div className="mt-2 text-xs">
-                  <div>เลขที่บิล: <strong className="font-mono text-blue-800">INV-{selectedJob?.job_no}</strong></div>
-                  <div>วันที่: <strong>{todayDateStr}</strong></div>
-                  <div>อ้างอิง Job ID: <strong className="font-mono">{selectedJob?.job_no}</strong></div>
+              <div className="text-right shrink-0">
+                <div className="text-xl font-black text-slate-900 leading-tight">ใบแจ้งหนี้ / INVOICE</div>
+                <div className="mt-2 text-xs space-y-0.5">
+                  <div>วันที่ / DATE: <strong className="font-mono">{todayDateStr}</strong></div>
+                  <div>INVOICE NO: <strong className="font-mono text-blue-800 text-sm">6807-{selectedJob?.job_no.replace('TMS-', '') || '217'}</strong></div>
+                  <div>CREDIT: <strong className="text-rose-600 font-bold">30 DAYS</strong></div>
                 </div>
               </div>
             </div>
@@ -596,48 +611,69 @@ export default function InvoicingPage() {
           {/* Printable Official PAT Letter */}
           <div className="border-2 border-slate-900 p-8 rounded-lg bg-white text-slate-900 space-y-5 print:border-none print:p-0 font-serif leading-relaxed">
             {/* Letterhead */}
-            <div className="text-center border-b pb-4">
-              <h2 className="text-xl font-black text-slate-900">บริษัท คอนเนค ทรานสปอร์ต จำกัด</h2>
-              <p className="text-xs font-sans text-slate-600">CONNECT TRANSPORT CO., LTD.</p>
-              <p className="text-xs font-sans text-slate-500 mt-1">
-                88/9 หมู่ 2 ถ.บางนา-ตราด ต.บางเสาธง อ.บางเสาธง จ.สมุทรปราการ 10570 | โทร: 02-765-4321
-              </p>
+            <div className="flex justify-between items-start border-b pb-4">
+              <div className="flex items-start gap-4">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img 
+                  src="/images/logo-print.png" 
+                  alt="Connect Transport Logo" 
+                  className="h-16 w-auto object-contain" 
+                />
+                <div>
+                  <h2 className="text-lg font-black text-slate-900 leading-tight">CONNECT TRANSPORT CO.,LTD.</h2>
+                  <p className="text-sm font-bold text-slate-800">บริษัท คอนเนค ทรานสปอร์ต จำกัด</p>
+                  <p className="text-[11px] text-slate-600 mt-1 leading-snug">
+                    369/1 LIAP KHLONG MON ROAD, THAP YAO, LATKRABANG, BANGKOK 10520<br />
+                    369/1 ถนนเลียบคลองมอญ แขวงทับยาว เขตลาดกระบัง กรุงเทพมหานคร 10520
+                  </p>
+                </div>
+              </div>
+              <div className="text-right text-xs font-sans text-slate-700 space-y-0.5">
+                <div>TEL : (662) 2861900 ( AUTO )</div>
+                <div>E-MAIL : yodsapol@connecttransport.co.th</div>
+              </div>
             </div>
 
-            {/* Letter Meta */}
-            <div className="flex justify-between text-xs font-sans">
-              <div>ที่: CT-PAT/{selectedJob?.job_no}</div>
-              <div>วันที่: {todayDateStr}</div>
+            {/* Letter Date */}
+            <div className="text-right text-xs font-sans pt-2">
+              วันที่ {todayDateStr}
             </div>
 
             {/* Subject & Salutation */}
-            <div className="text-xs space-y-1.5 font-sans">
-              <div><strong>เรื่อง:</strong> ขอเปลี่ยนชื่อและที่อยู่ในใบเสร็จรับเงิน / ใบกำกับภาษี ของการท่าเรือแห่งประเทศไทย</div>
-              <div><strong>เรียน:</strong> ผู้อำนวยการกองการเงิน / ผู้อำนวยการฝ่ายการเงินและบัญชี การท่าเรือแห่งประเทศไทย</div>
+            <div className="text-xs space-y-2 font-sans">
+              <div className="flex justify-between items-center">
+                <div><strong>เรื่อง:</strong> ขอใบกำกับภาษีเต็มรูปแบบ</div>
+                <div className="text-slate-500 font-mono text-[11px]">รหัส: 0115557007317</div>
+              </div>
+              <div><strong>เรียน:</strong> ผู้อำนวยการแผนกกองคลังการท่าเรือแห่งประเทศไทย</div>
             </div>
 
             {/* Body */}
-            <div className="text-xs space-y-3 font-sans indent-8 text-justify">
+            <div className="text-xs space-y-3 font-sans indent-8 text-justify leading-relaxed">
               <p>
-                ตามที่ บริษัท คอนเนค ทรานสปอร์ต จำกัด ได้รับมอบหมายให้ดำเนินการขนย้ายตู้คอนเทนเนอร์ และได้ชำระเงินค่าภาระหรือค่าธรรมเนียมต่างๆ ของการท่าเรือแห่งประเทศไทย โดยใบเสร็จรับเงินเดิมได้ออกในนามของ บริษัท คอนเนค ทรานสปอร์ต จำกัด นั้น
-              </p>
-              <p>
-                บริษัทฯ ขอเรียนชี้แจงว่า ตู้คอนเทนเนอร์ดังกล่าวเป็นกรรมสิทธิ์และการว่าจ้างของลูกค้า บริษัทฯ จึงใคร่ขอความอนุเคราะห์จากท่าน โปรดดำเนินการยกเลิกใบเสร็จรับเงินเดิม และออกใบเสร็จรับเงิน / ใบกำกับภาษีฉบับใหม่ ในนามของลูกค้า โดยมีรายละเอียดดังต่อไปนี้:
+                เนื่องจากบริษัท คอนเนค ทรานสปอร์ต จำกัด ได้กระทำการชำระค่าภาระสินค้าขาออกและค่ายานพาหนะผ่านท่าการนำสินค้าเข้าท่าเรือนั้น บริษัทมีความประสงค์จะขอให้กองคลังออกใบกำกับภาษีตามรายละเอียดดังนี้
               </p>
             </div>
 
             {/* Target Customer Specs */}
-            <div className="p-4 bg-slate-50 rounded border text-xs font-sans space-y-1.5">
-              <div><strong>1. ชื่อบริษัทลูกค้า:</strong> {selectedJob?.customer?.company_name}</div>
-              <div><strong>2. เลขประจำตัวผู้เสียภาษี (13 หลัก):</strong> <span className="font-mono font-bold">{selectedJob?.customer?.tax_id || '-'}</span> (สำนักงานใหญ่)</div>
-              <div><strong>3. ที่อยู่ตามทะเบียนภาษี:</strong> {selectedJob?.customer?.address || '-'}</div>
-              <div><strong>4. หมายเลขตู้คอนเทนเนอร์:</strong> <span className="font-mono font-bold text-blue-900">{selectedJob?.container_no || '-'}</span> (ขนาด {selectedJob?.container_size}&apos; {selectedJob?.container_type})</div>
-              <div><strong>5. อ้างอิง Job ID:</strong> {selectedJob?.job_no} (วันที่ {selectedJob?.job_date})</div>
+            <div className="p-4 bg-slate-50 rounded border text-xs font-sans space-y-2">
+              <div className="font-bold text-slate-900 text-sm">
+                {selectedJob?.customer?.company_name} ( สาขาที่ 00001 )
+              </div>
+              <div className="text-slate-700">
+                {selectedJob?.customer?.address || 'ที่อยู่ตาม ภ.พ.20'}
+              </div>
+              <div>
+                เลขประจำตัวผู้เสียภาษี: <span className="font-mono font-bold text-slate-900">{selectedJob?.customer?.tax_id || '-'}</span>
+              </div>
+              <div className="text-[11px] text-slate-500 pt-1 border-t">
+                หมายเลขตู้คอนเทนเนอร์: <span className="font-mono font-bold text-blue-900">{selectedJob?.container_no || '-'}</span> (ขนาด {selectedJob?.container_size}&apos; {selectedJob?.container_type}) | อ้างอิง Job ID: {selectedJob?.job_no}
+              </div>
             </div>
 
             <div className="text-xs font-sans indent-8">
               <p>
-                บริษัทฯ ได้แนบใบเสร็จรับเงินฉบับเดิมพร้อมหนังสือมอบอำนาจมาพร้อมหนังสือฉบับนี้แล้ว จึงเรียนมาเพื่อโปรดพิจารณาให้ความอนุเคราะห์ และขอขอบพระคุณเป็นอย่างสูงมา ณ โอกาสนี้
+                จึงเรียนมาเพื่อทราบและโปรดพิจารณาด้วย จักเป็นพระคุณยิ่ง
               </p>
             </div>
 
@@ -646,9 +682,8 @@ export default function InvoicingPage() {
               <div className="w-64 space-y-1">
                 <div>ขอแสดงความนับถือ</div>
                 <div className="py-6">( .................................................... )</div>
-                <div className="font-bold">กรรมการผู้จัดการ / ผู้มีอำนาจลงนาม</div>
-                <div className="text-slate-500 text-[11px]">บริษัท คอนเนค ทรานสปอร์ต จำกัด</div>
-                <div className="text-[10px] text-slate-400 mt-2">[ ประทับตราสำคัญของบริษัท ]</div>
+                <div className="font-bold text-slate-900">(นายยศพล มณีทิพย์สกุล)</div>
+                <div className="text-slate-600 text-xs">ผู้รับมอบ</div>
               </div>
             </div>
           </div>

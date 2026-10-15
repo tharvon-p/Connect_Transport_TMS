@@ -1,5 +1,18 @@
 export type VehicleType = '4_wheel' | '6_wheel' | '10_wheel' | 'trailer' | 'semi_trailer';
-export type JobType = 'heavy_to_open' | 'empty_to_stuff' | 'empty_return' | 'yard_move';
+export type JobType = 'heavy_to_open' | 'empty_to_stuff' | 'empty_return' | 'yard_move' | string;
+
+export interface JobTypeItem {
+  id: string;
+  code: string;
+  name: string;
+  category: string;
+  process_flow: string;
+  notes?: string | null;
+  requires_pat: boolean;
+  requires_inspection: boolean;
+  status: 'active' | 'inactive';
+  created_at?: string;
+}
 export type JobStatus = 'draft' | 'assigned' | 'in_progress' | 'completed' | 'cancelled';
 export type ContainerSize = '20' | '40' | '45';
 export type ContainerType = 'DC' | 'HC' | 'OT' | 'RH' | 'GP' | 'Reefer' | string;

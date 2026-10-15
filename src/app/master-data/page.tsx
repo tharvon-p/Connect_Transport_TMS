@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
-import { Vehicle, Driver, Customer, Location, RateCard, VehicleType, ContainerSize, ContainerType, LocationType } from '@/types/database';
+import { Vehicle, Driver, Customer, Location, RateCard, JobTypeItem, VehicleType, ContainerSize, ContainerType, LocationType } from '@/types/database';
 import { logActivity } from '@/lib/audit-logger';
 import { useAuth } from '@/lib/auth-context';
 import { SortableHeader, sortArray, SortState } from '@/components/ui/table-sort';
@@ -73,6 +73,53 @@ const locationTypeMap: Record<string, string> = {
   'other': 'อื่นๆ',
 };
 
+const DEFAULT_JOB_TYPES: JobTypeItem[] = [
+  {
+    id: 'jt-1',
+    code: 'heavy_to_open',
+    name: 'ลากตู้หนักไปเปิด (Heavy to Open)',
+    category: 'งานนำเข้าสินค้า (Import Work)',
+    process_flow: 'รับตู้หนักจากท่าเรือหรือลานตู้ ➔ ขนส่งไปยังโรงงานลูกค้าเพื่อเปิดตู้และนำสินค้าลง ➔ ลากตู้เปล่ากลับไปคืนลานตู้สายเรือ',
+    notes: 'มีการออกจดหมายเปลี่ยนใบเสร็จท่าเรือ (PAT) กรณีรับจากท่าเรือคลองเตย',
+    requires_pat: true,
+    requires_inspection: false,
+    status: 'active',
+  },
+  {
+    id: 'jt-2',
+    code: 'empty_to_stuff',
+    name: 'ลากตู้เปล่าไปบรรจุ (Empty to Stuff)',
+    category: 'งานส่งออกสินค้า (Export Work)',
+    process_flow: 'รับตู้เปล่าจากลานตู้สายเรือ ➔ ขนส่งไปยังโรงงานลูกค้าเพื่อบรรจุสินค้าและล็อคซีล (Seal) ➔ ขนส่งตู้หนักไปส่งที่ท่าเรือเพื่อรอขึ้นเรือ',
+    notes: 'ต้องตรวจสภาพตู้ 5 มุม และถ่ายรูปหน้าตู้ที่ล็อคซีลอย่างเคร่งครัด',
+    requires_pat: false,
+    requires_inspection: true,
+    status: 'active',
+  },
+  {
+    id: 'jt-3',
+    code: 'empty_return',
+    name: 'ลากตู้เปล่าคืน (Empty Return)',
+    category: 'ส่งคืนตู้เปล่าเข้าลานสายเรือ',
+    process_flow: 'รับตู้เปล่าที่เปิดสินค้าแล้วแกะตู้เสร็จจากโรงงาน ➔ ตรวจสภาพความเสียหายและทำความสะอาด ➔ ส่งมอบคืนลานตู้สายเรือพร้อมรับใบ EIR',
+    notes: 'ตรวจตั๋วรับตู้ EIR ให้ตรงกับ Booking/สายเรือ',
+    requires_pat: false,
+    requires_inspection: true,
+    status: 'active',
+  },
+  {
+    id: 'jt-4',
+    code: 'yard_move',
+    name: 'ย้ายลาน (Yard Move)',
+    category: 'การเคลื่อนย้ายภายในลานหรือระหว่างลานตู้',
+    process_flow: 'ยกตู้กดสับเปลี่ยนตำแหน่งระหว่างลาน หรือย้ายตู้จากลานพักไปท่าเรือเพื่อรอรอบการบรรทุกขึ้นเรือ',
+    notes: 'บันทึกตำแหน่ง Slot / Bay ในลานตู้ให้แม่นยำ',
+    requires_pat: false,
+    requires_inspection: false,
+    status: 'active',
+  },
+];
+
 // Google Maps URL Resolver Helper
 function getGoogleMapsUrl(locationMap?: string | null, name?: string | null, province?: string | null): string {
   if (locationMap && locationMap.trim()) {
@@ -120,6 +167,7 @@ export default function MasterDataPage() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [locations, setLocations] = useState<Location[]>([]);
   const [rateCards, setRateCards] = useState<RateCard[]>([]);
+  const [jobTypes, setJobTypes] = useState<JobTypeItem[]>(DEFAULT_JOB_TYPES);
 
   // Sorting States
   const [vehicleSort, setVehicleSort] = useState<SortState>({ key: 'truck_name_id', direction: 'asc' });
@@ -127,6 +175,8 @@ export default function MasterDataPage() {
   const [customerSort, setCustomerSort] = useState<SortState>({ key: 'company_name', direction: 'asc' });
   const [locationSort, setLocationSort] = useState<SortState>({ key: 'name', direction: 'asc' });
   const [rateCardSort, setRateCardSort] = useState<SortState>({ key: 'base_price', direction: 'desc' });
+  const [jobTypeSort, setJobTypeSort] = useState<SortState>({ key: 'name', direction: 'asc' });
+  const [jobTypeViewMode, setJobTypeViewMode] = useState<'cards' | 'table'>('cards');
 
   const handleSort = (
     key: string,
@@ -175,12 +225,19 @@ export default function MasterDataPage() {
     });
   }, [rateCards, rateCardSort]);
 
+  const sortedJobTypes = useMemo(() => {
+    return sortArray(jobTypes, jobTypeSort.key, jobTypeSort.direction, (jt) => {
+      return (jt as any)[jobTypeSort.key];
+    });
+  }, [jobTypes, jobTypeSort]);
+
   // Dialog States
   const [openVehicleModal, setOpenVehicleModal] = useState(false);
   const [openDriverModal, setOpenDriverModal] = useState(false);
   const [openCustomerModal, setOpenCustomerModal] = useState(false);
   const [openLocationModal, setOpenLocationModal] = useState(false);
   const [openRateCardModal, setOpenRateCardModal] = useState(false);
+  const [openJobTypeModal, setOpenJobTypeModal] = useState(false);
 
   // Editing State IDs (null when creating new)
   const [editVehicleId, setEditVehicleId] = useState<string | null>(null);
@@ -188,8 +245,19 @@ export default function MasterDataPage() {
   const [editCustomerId, setEditCustomerId] = useState<string | null>(null);
   const [editLocationId, setEditLocationId] = useState<string | null>(null);
   const [editRateCardId, setEditRateCardId] = useState<string | null>(null);
+  const [editJobTypeId, setEditJobTypeId] = useState<string | null>(null);
 
   // Form States
+  const [jobTypeForm, setJobTypeForm] = useState({
+    name: '',
+    code: '',
+    category: 'งานนำเข้าสินค้า (Import Work)',
+    process_flow: '',
+    notes: '',
+    requires_pat: false,
+    requires_inspection: false,
+    status: 'active' as 'active' | 'inactive',
+  });
   const [vehicleForm, setVehicleForm] = useState({
     truck_name_id: '',
     plate_number: '',
@@ -272,6 +340,30 @@ export default function MasterDataPage() {
       if (cRes.data) setCustomers(cRes.data);
       if (lRes.data) setLocations(lRes.data);
       if (rRes.data) setRateCards(rRes.data);
+
+      // Fetch Job Types (Supabase or LocalStorage fallback)
+      try {
+        const { data: jtData } = await supabase.from('job_types').select('*').order('name');
+        if (jtData && jtData.length > 0) {
+          setJobTypes(jtData as JobTypeItem[]);
+          if (typeof window !== 'undefined') {
+            localStorage.setItem('connect_tms_job_types', JSON.stringify(jtData));
+          }
+        } else if (typeof window !== 'undefined') {
+          const cached = localStorage.getItem('connect_tms_job_types');
+          if (cached) {
+            setJobTypes(JSON.parse(cached));
+          } else {
+            setJobTypes(DEFAULT_JOB_TYPES);
+            localStorage.setItem('connect_tms_job_types', JSON.stringify(DEFAULT_JOB_TYPES));
+          }
+        }
+      } catch {
+        if (typeof window !== 'undefined') {
+          const cached = localStorage.getItem('connect_tms_job_types');
+          if (cached) setJobTypes(JSON.parse(cached));
+        }
+      }
     } catch (error) {
       console.error('Error fetching master data:', error);
     } finally {
@@ -831,6 +923,136 @@ export default function MasterDataPage() {
   };
 
   // -------------------------------------------------------------------
+  // 6. JOB TYPE HANDLERS
+  // -------------------------------------------------------------------
+  const handleOpenAddJobType = () => {
+    setEditJobTypeId(null);
+    setJobTypeForm({
+      name: '',
+      code: '',
+      category: 'งานนำเข้าสินค้า (Import Work)',
+      process_flow: '',
+      notes: '',
+      requires_pat: false,
+      requires_inspection: false,
+      status: 'active',
+    });
+    setOpenJobTypeModal(true);
+  };
+
+  const handleOpenEditJobType = (jt: JobTypeItem) => {
+    setEditJobTypeId(jt.id);
+    setJobTypeForm({
+      name: jt.name || '',
+      code: jt.code || '',
+      category: jt.category || 'งานนำเข้าสินค้า (Import Work)',
+      process_flow: jt.process_flow || '',
+      notes: jt.notes || '',
+      requires_pat: !!jt.requires_pat,
+      requires_inspection: !!jt.requires_inspection,
+      status: jt.status || 'active',
+    });
+    setOpenJobTypeModal(true);
+  };
+
+  const handleSaveJobType = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!jobTypeForm.name) {
+      alert('กรุณากรอกชื่อประเภทงาน');
+      return;
+    }
+
+    const payload: JobTypeItem = {
+      id: editJobTypeId || `jt-${Date.now()}`,
+      name: jobTypeForm.name,
+      code: jobTypeForm.code || jobTypeForm.name.toLowerCase().replace(/[^a-zA-Z0-9]/g, '_').slice(0, 30),
+      category: jobTypeForm.category,
+      process_flow: jobTypeForm.process_flow,
+      notes: jobTypeForm.notes || null,
+      requires_pat: jobTypeForm.requires_pat,
+      requires_inspection: jobTypeForm.requires_inspection,
+      status: jobTypeForm.status,
+    };
+
+    let updatedList: JobTypeItem[] = [];
+    if (editJobTypeId) {
+      updatedList = jobTypes.map((item) => (item.id === editJobTypeId ? payload : item));
+    } else {
+      updatedList = [...jobTypes, payload];
+    }
+
+    setJobTypes(updatedList);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('connect_tms_job_types', JSON.stringify(updatedList));
+    }
+
+    // Attempt to persist to Supabase if table exists
+    try {
+      if (editJobTypeId) {
+        await supabase.from('job_types').update(payload).eq('id', editJobTypeId);
+      } else {
+        await supabase.from('job_types').insert([payload]);
+      }
+    } catch {
+      // Gracefully continue with localStorage
+    }
+
+    logActivity({
+      user_id: currentUser?.id || 'sys',
+      user_name: currentUser?.name || 'User',
+      user_role: currentRole?.id || 'admin',
+      action: editJobTypeId ? 'UPDATE' : 'CREATE',
+      module: 'MASTER_DATA',
+      description: `${editJobTypeId ? 'แก้ไข' : 'เพิ่ม'}ประเภทงาน: ${payload.name}`,
+    });
+
+    setOpenJobTypeModal(false);
+    alert(`บันทึกประเภทงาน "${payload.name}" เรียบร้อยแล้ว!`);
+  };
+
+  const handleDeleteJobType = async (id: string, name: string) => {
+    if (!confirm(`คุณต้องการลบประเภทงาน "${name}" ใช่หรือไม่?`)) return;
+
+    const updatedList = jobTypes.filter((item) => item.id !== id);
+    setJobTypes(updatedList);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('connect_tms_job_types', JSON.stringify(updatedList));
+    }
+
+    try {
+      await supabase.from('job_types').delete().eq('id', id);
+    } catch {
+      // Gracefully continue with localStorage
+    }
+
+    logActivity({
+      user_id: currentUser?.id || 'sys',
+      user_name: currentUser?.name || 'User',
+      user_role: currentRole?.id || 'admin',
+      action: 'DELETE',
+      module: 'MASTER_DATA',
+      description: `ลบประเภทงาน: ${name}`,
+    });
+
+    alert(`ลบประเภทงาน "${name}" เรียบร้อยแล้ว!`);
+  };
+
+  const exportJobTypesCsv = () => {
+    const headers = ['รหัสประเภทงาน', 'ชื่องาน', 'หมวดหมู่งาน', 'ขั้นตอนกระบวนการ', 'ข้อกำหนดพิเศษ', 'จดหมาย PAT', 'ตรวจ 5 มุม', 'สถานะ'];
+    const rows = jobTypes.map((jt) => [
+      jt.code,
+      jt.name,
+      jt.category,
+      jt.process_flow,
+      jt.notes || '-',
+      jt.requires_pat ? 'ใช่' : 'ไม่ใช่',
+      jt.requires_inspection ? 'ใช่' : 'ไม่ใช่',
+      jt.status === 'active' ? 'เปิดใช้งาน' : 'ปิดใช้งาน',
+    ]);
+    exportToCsv('Job_Types_Master', headers, rows);
+  };
+
+  // -------------------------------------------------------------------
   // DELETE HANDLER (SHARED)
   // -------------------------------------------------------------------
   const handleDelete = async (table: string, id: string, nameDesc: string) => {
@@ -912,7 +1134,7 @@ export default function MasterDataPage() {
           </TabsTrigger>
           <TabsTrigger value="job-types" className="gap-2">
             <FileCheck className="h-4 w-4" />
-            ประเภทงาน
+            ประเภทงาน ({jobTypes.length})
           </TabsTrigger>
         </TabsList>
 
@@ -1426,49 +1648,184 @@ export default function MasterDataPage() {
 
         {/* ================= TAB 6: JOB TYPES ================= */}
         <TabsContent value="job-types">
-          <div className="grid md:grid-cols-2 gap-4">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base font-bold text-slate-900">1. ลากตู้หนักไปเปิด (Heavy to Open)</CardTitle>
-                <CardDescription>งานนำเข้าสินค้า (Import Work)</CardDescription>
-              </CardHeader>
-              <CardContent className="text-xs text-slate-600 space-y-2">
-                <p><strong>กระบวนการ:</strong> รับตู้หนักจากท่าเรือหรือลานตู้ ➔ ขนส่งไปยังโรงงานลูกค้าเพื่อเปิดตู้และนำสินค้าลง ➔ ลากตู้เปล่ากลับไปคืนลานตู้สายเรือ</p>
-                <p className="text-blue-600 font-semibold">* มีการออกจดหมายเปลี่ยนใบเสร็จท่าเรือ (PAT) กรณีรับจากท่าเรือคลองเตย</p>
-              </CardContent>
-            </Card>
+          <Card>
+            <CardHeader className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div>
+                <CardTitle className="text-lg flex items-center gap-2">
+                  <FileCheck className="h-5 w-5 text-blue-600" />
+                  ประเภทงานขนส่ง (Job Types Master)
+                </CardTitle>
+                <CardDescription>
+                  กำหนดประเภทงานขนส่ง กระบวนการทำงาน (Process Flow) เงื่อนไขเอกสารเปลี่ยนใบเสร็จท่าเรือ (PAT) และการตรวจสภาพตู้
+                </CardDescription>
+              </div>
+              <div className="flex items-center gap-2">
+                {/* View Mode Toggle: Cards vs Table */}
+                <div className="bg-slate-100 p-0.5 rounded-lg flex items-center border border-slate-200">
+                  <button
+                    type="button"
+                    onClick={() => setJobTypeViewMode('cards')}
+                    className={`px-2.5 py-1 text-xs rounded-md font-medium transition-all ${
+                      jobTypeViewMode === 'cards' ? 'bg-white text-blue-700 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    มุมมองการ์ด
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setJobTypeViewMode('table')}
+                    className={`px-2.5 py-1 text-xs rounded-md font-medium transition-all ${
+                      jobTypeViewMode === 'table' ? 'bg-white text-blue-700 shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    มุมมองตาราง
+                  </button>
+                </div>
 
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base font-bold text-slate-900">2. ลากตู้เปล่าไปบรรจุ (Empty to Stuff)</CardTitle>
-                <CardDescription>งานส่งออกสินค้า (Export Work)</CardDescription>
-              </CardHeader>
-              <CardContent className="text-xs text-slate-600 space-y-2">
-                <p><strong>กระบวนการ:</strong> รับตู้เปล่าจากลานตู้สายเรือ ➔ ขนส่งไปยังโรงงานลูกค้าเพื่อบรรจุสินค้าและล็อคซีล (Seal) ➔ ขนส่งตู้หนักไปส่งที่ท่าเรือเพื่อรอขึ้นเรือ</p>
-                <p className="text-blue-600 font-semibold">* ต้องตรวจสภาพตู้ 5 มุม และถ่ายรูปหน้าตู้ที่ล็อคซีลอย่างเคร่งครัด</p>
-              </CardContent>
-            </Card>
+                <Button variant="outline" size="sm" onClick={exportJobTypesCsv} className="gap-1.5 text-xs">
+                  <Download className="h-3.5 w-3.5" /> Export CSV
+                </Button>
+                <Button onClick={handleOpenAddJobType} className="gap-1.5 bg-blue-600 hover:bg-blue-700 text-xs text-white">
+                  <Plus className="h-3.5 w-3.5" /> เพิ่มประเภทงาน
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {jobTypeViewMode === 'cards' ? (
+                /* Cards View with Edit & Delete actions */
+                <div className="grid md:grid-cols-2 gap-4">
+                  {sortedJobTypes.map((jt, idx) => (
+                    <Card key={jt.id} className="border border-slate-200 shadow-xs hover:shadow-md transition-shadow relative group">
+                      <CardHeader className="pb-2">
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-bold text-slate-400 font-mono">#{idx + 1}</span>
+                              <CardTitle className="text-base font-bold text-slate-900">{jt.name}</CardTitle>
+                            </div>
+                            <CardDescription className="text-xs text-blue-700 font-medium mt-0.5">
+                              {jt.category}
+                            </CardDescription>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => handleOpenEditJobType(jt)}
+                              className="h-8 w-8 p-0 text-slate-600 hover:text-blue-600"
+                              title="แก้ไขประเภทงานนี้"
+                            >
+                              <Edit3 className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => handleDeleteJobType(jt.id, jt.name)}
+                              className="h-8 w-8 p-0 text-slate-400 hover:text-rose-600"
+                              title="ลบประเภทงานนี้"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        </div>
+                      </CardHeader>
+                      <CardContent className="text-xs text-slate-600 space-y-2.5 pt-0">
+                        <div className="p-2.5 rounded-md bg-slate-50 border border-slate-100">
+                          <span className="font-semibold text-slate-800 block mb-1">กระบวนการขั้นตอน (Process Flow):</span>
+                          <p className="text-slate-600 leading-relaxed">{jt.process_flow}</p>
+                        </div>
 
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base font-bold text-slate-900">3. ลากตู้เปล่าคืน (Empty Return)</CardTitle>
-                <CardDescription>ส่งคืนตู้เปล่าเข้าลานสายเรือ</CardDescription>
-              </CardHeader>
-              <CardContent className="text-xs text-slate-600 space-y-2">
-                <p><strong>กระบวนการ:</strong> รับตู้เปล่าที่เปิดสินค้าเสร็จแล้วจากโรงงาน ➔ ตรวจสอบสภาพความเสียหายและทำความสะอาด ➔ ส่งมอบคืนลานตู้สายเรือพร้อมรับใบ EIR</p>
-              </CardContent>
-            </Card>
+                        {jt.notes && (
+                          <div className="text-[11px] text-blue-700 font-medium bg-blue-50/60 p-2 rounded border border-blue-100">
+                            {jt.notes}
+                          </div>
+                        )}
 
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base font-bold text-slate-900">4. ย้ายลาน (Yard Move)</CardTitle>
-                <CardDescription>การเคลื่อนย้ายภายในลานหรือระหว่างลานตู้</CardDescription>
-              </CardHeader>
-              <CardContent className="text-xs text-slate-600 space-y-2">
-                <p><strong>กระบวนการ:</strong> ขนย้ายตู้คอนเทนเนอร์ระหว่างลาน หรือย้ายจุดวางในท่าเรือเพื่อรอรอบการบรรจุ/ขนถ่าย</p>
-              </CardContent>
-            </Card>
-          </div>
+                        <div className="flex flex-wrap items-center gap-2 pt-1">
+                          {jt.requires_pat && (
+                            <Badge className="bg-purple-100 text-purple-800 border-purple-200 text-[10px] px-2 py-0.5">
+                              ✓ ออกจดหมายท่าเรือ (PAT)
+                            </Badge>
+                          )}
+                          {jt.requires_inspection && (
+                            <Badge className="bg-amber-100 text-amber-800 border-amber-200 text-[10px] px-2 py-0.5">
+                              ✓ ตรวจสภาพ 5 มุม &amp; ซีล
+                            </Badge>
+                          )}
+                          <Badge variant={jt.status === 'active' ? 'outline' : 'secondary'} className="text-[10px] px-2 py-0.5">
+                            {jt.status === 'active' ? 'เปิดใช้งาน' : 'ปิดการใช้งาน'}
+                          </Badge>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              ) : (
+                /* Table View */
+                <div className="rounded-md border overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="bg-slate-100/80">
+                        <SortableHeader title="ชื่องาน (Job Type Name)" sortKey="name" currentSort={jobTypeSort} onSort={(k) => handleSort(k, jobTypeSort, setJobTypeSort)} className="font-bold text-blue-900" />
+                        <SortableHeader title="หมวดหมู่งาน" sortKey="category" currentSort={jobTypeSort} onSort={(k) => handleSort(k, jobTypeSort, setJobTypeSort)} />
+                        <TableHead>กระบวนการทำงาน (Process Flow)</TableHead>
+                        <TableHead>ข้อกำหนดพิเศษ / เอกสาร</TableHead>
+                        <SortableHeader title="สถานะ" sortKey="status" currentSort={jobTypeSort} onSort={(k) => handleSort(k, jobTypeSort, setJobTypeSort)} />
+                        <TableHead className="text-right">จัดการ</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {sortedJobTypes.map((jt) => (
+                        <TableRow key={jt.id} className="hover:bg-slate-50 text-xs">
+                          <TableCell className="font-bold text-slate-900">
+                            <div>{jt.name}</div>
+                            <div className="text-[11px] font-mono text-slate-400 font-normal">{jt.code}</div>
+                          </TableCell>
+                          <TableCell className="font-medium text-blue-800">{jt.category}</TableCell>
+                          <TableCell className="text-slate-600 max-w-sm truncate">{jt.process_flow}</TableCell>
+                          <TableCell>
+                            <div className="flex flex-wrap gap-1">
+                              {jt.requires_pat && (
+                                <Badge className="bg-purple-100 text-purple-800 border-purple-200 text-[10px] px-1.5 py-0">PAT</Badge>
+                              )}
+                              {jt.requires_inspection && (
+                                <Badge className="bg-amber-100 text-amber-800 border-amber-200 text-[10px] px-1.5 py-0">ตรวจ 5 มุม</Badge>
+                              )}
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant={jt.status === 'active' ? 'default' : 'secondary'} className="text-[11px]">
+                              {jt.status === 'active' ? 'เปิดใช้งาน' : 'ปิดใช้งาน'}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-right whitespace-nowrap">
+                            <div className="flex items-center justify-end gap-1">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => handleOpenEditJobType(jt)}
+                                className="h-8 w-8 p-0 text-slate-600 hover:text-blue-600"
+                              >
+                                <Edit3 className="h-3.5 w-3.5" />
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => handleDeleteJobType(jt.id, jt.name)}
+                                className="h-8 w-8 p-0 text-slate-400 hover:text-rose-600"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
         </TabsContent>
       </Tabs>
 
@@ -2171,6 +2528,122 @@ export default function MasterDataPage() {
               </Button>
               <Button type="submit" className="bg-blue-600 hover:bg-blue-700">
                 {editRateCardId ? 'บันทึกการแก้ไข' : 'บันทึกเรทราคา'}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* ================= MODAL: JOB TYPE (ADD / EDIT) ================= */}
+      <Dialog open={openJobTypeModal} onOpenChange={setOpenJobTypeModal}>
+        <DialogContent className="sm:max-w-[580px] max-h-[92vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{editJobTypeId ? 'แก้ไขประเภทงาน' : 'เพิ่มประเภทงานใหม่'}</DialogTitle>
+            <DialogDescription>
+              กำหนดชื่อ หมวดหมู่ กระบวนการทำงาน และเงื่อนไขการออกเอกสาร
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleSaveJobType} className="space-y-4">
+            <div className="grid grid-cols-3 gap-3">
+              <div className="col-span-2">
+                <Label className="text-xs font-bold">ชื่อประเภทงาน *</Label>
+                <Input
+                  required
+                  placeholder="เช่น ลากตู้หนักไปเปิด (Heavy to Open)"
+                  value={jobTypeForm.name}
+                  onChange={(e) => setJobTypeForm({ ...jobTypeForm, name: e.target.value })}
+                />
+              </div>
+              <div>
+                <Label className="text-xs">รหัสงาน (Code)</Label>
+                <Input
+                  placeholder="heavy_to_open"
+                  value={jobTypeForm.code}
+                  onChange={(e) => setJobTypeForm({ ...jobTypeForm, code: e.target.value })}
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs font-bold">หมวดหมู่งาน</Label>
+                <select
+                  className="w-full border rounded-md px-3 py-2 text-sm bg-white"
+                  value={jobTypeForm.category}
+                  onChange={(e) => setJobTypeForm({ ...jobTypeForm, category: e.target.value })}
+                >
+                  <option value="งานนำเข้าสินค้า (Import Work)">งานนำเข้าสินค้า (Import Work)</option>
+                  <option value="งานส่งออกสินค้า (Export Work)">งานส่งออกสินค้า (Export Work)</option>
+                  <option value="ส่งคืนตู้เปล่าเข้าลานสายเรือ">ส่งคืนตู้เปล่าเข้าลานสายเรือ</option>
+                  <option value="การเคลื่อนย้ายภายในลานหรือระหว่างลานตู้">ย้ายลาน (Yard Move)</option>
+                  <option value="งานพิเศษ / อื่นๆ">งานพิเศษ / อื่นๆ</option>
+                </select>
+              </div>
+              <div>
+                <Label className="text-xs font-bold">สถานะ</Label>
+                <select
+                  className="w-full border rounded-md px-3 py-2 text-sm bg-white"
+                  value={jobTypeForm.status}
+                  onChange={(e) => setJobTypeForm({ ...jobTypeForm, status: e.target.value as 'active' | 'inactive' })}
+                >
+                  <option value="active">เปิดใช้งาน (Active)</option>
+                  <option value="inactive">ปิดการใช้งาน (Inactive)</option>
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <Label className="text-xs font-bold">ขั้นตอนกระบวนการทำงาน (Process Flow) *</Label>
+              <textarea
+                required
+                rows={3}
+                className="w-full border rounded-md px-3 py-2 text-sm bg-white"
+                placeholder="อธิบายขั้นตอน เช่น รับตู้หนักจากท่าเรือ ➔ ขนส่งไปยังโรงงาน ➔ ส่งคืนตู้เปล่า..."
+                value={jobTypeForm.process_flow}
+                onChange={(e) => setJobTypeForm({ ...jobTypeForm, process_flow: e.target.value })}
+              />
+            </div>
+
+            <div>
+              <Label className="text-xs">ข้อกำหนดพิเศษ / หมายเหตุการปฏิบัติงาน</Label>
+              <Input
+                placeholder="เช่น มีการออกจดหมาย PAT, ตรวจสอบซีล ฯลฯ"
+                value={jobTypeForm.notes}
+                onChange={(e) => setJobTypeForm({ ...jobTypeForm, notes: e.target.value })}
+              />
+            </div>
+
+            <div className="p-3 bg-slate-50 border rounded-lg space-y-2">
+              <span className="text-xs font-bold text-slate-700 block">เงื่อนไขเฉพาะของงานนี้:</span>
+              <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                <label className="flex items-center gap-2 text-xs cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={jobTypeForm.requires_pat}
+                    onChange={(e) => setJobTypeForm({ ...jobTypeForm, requires_pat: e.target.checked })}
+                    className="rounded text-blue-600 focus:ring-blue-500 h-4 w-4"
+                  />
+                  <span>ต้องออกจดหมายท่าเรือ (PAT Letter)</span>
+                </label>
+
+                <label className="flex items-center gap-2 text-xs cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={jobTypeForm.requires_inspection}
+                    onChange={(e) => setJobTypeForm({ ...jobTypeForm, requires_inspection: e.target.checked })}
+                    className="rounded text-blue-600 focus:ring-blue-500 h-4 w-4"
+                  />
+                  <span>ต้องตรวจสภาพตู้ 5 มุม &amp; ซีล</span>
+                </label>
+              </div>
+            </div>
+
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setOpenJobTypeModal(false)}>
+                ยกเลิก
+              </Button>
+              <Button type="submit" className="bg-blue-600 hover:bg-blue-700">
+                {editJobTypeId ? 'บันทึกการแก้ไข' : 'บันทึกประเภทงาน'}
               </Button>
             </DialogFooter>
           </form>

@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { supabase } from '@/lib/supabase';
 import { getLocalLogs, AuditLogEntry, AuditAction, AuditModule } from '@/lib/audit-logger';
 import { useAuth } from '@/lib/auth-context';
 import { 
@@ -64,7 +65,20 @@ export default function AuditLogsPage() {
   const [moduleFilter, setModuleFilter] = useState<string>('all');
   const [userFilter, setUserFilter] = useState<string>('all');
 
-  const fetchLogs = () => {
+  const fetchLogs = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('audit_logs')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (!error && data && data.length > 0) {
+        setLogs(data as AuditLogEntry[]);
+        return;
+      }
+    } catch (err) {
+      console.error('Error fetching audit logs from Supabase:', err);
+    }
     const list = getLocalLogs();
     setLogs(list);
   };
@@ -73,8 +87,11 @@ export default function AuditLogsPage() {
     fetchLogs();
   }, []);
 
-  const handleClearLogs = () => {
+  const handleClearLogs = async () => {
     if (!confirm('ยืนยันที่จะล้างประวัติ Audit Log ทั้งหมดหรือไม่? (สำหรับผู้ดูแลระบบ)')) return;
+    try {
+      await supabase.from('audit_logs').delete().neq('id', 'keep_all');
+    } catch (e) {}
     localStorage.removeItem('tms_audit_logs');
     fetchLogs();
   };

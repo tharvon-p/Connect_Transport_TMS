@@ -335,6 +335,24 @@ export default function InvoicingPage() {
     alert('✅ คืนค่าเริ่มต้นเรียบร้อยแล้ว');
   };
 
+  // Dedicated Print Handler (Ensures ONLY the document sheet prints cleanly without page background)
+  const handlePrintDocument = () => {
+    if (typeof document !== 'undefined') {
+      document.body.classList.add('is-printing-invoice');
+    }
+    window.print();
+  };
+
+  useEffect(() => {
+    const handleAfterPrint = () => {
+      if (typeof document !== 'undefined') {
+        document.body.classList.remove('is-printing-invoice');
+      }
+    };
+    window.addEventListener('afterprint', handleAfterPrint);
+    return () => window.removeEventListener('afterprint', handleAfterPrint);
+  }, []);
+
   // Open Invoice Modal
   const handleOpenInvoice = (job: Job) => {
     setSelectedJob(job);
@@ -1078,7 +1096,7 @@ export default function InvoicingPage() {
 
       {/* ================= MODAL: PRINTABLE INVOICE (REAL LAYOUT) ================= */}
       <Dialog open={openInvoiceModal} onOpenChange={setOpenInvoiceModal}>
-        <DialogContent className="sm:max-w-[780px] max-h-[90vh] overflow-y-auto">
+        <DialogContent className="sm:max-w-[780px] max-h-[90vh] overflow-y-auto print:max-w-none print:h-auto print:max-h-none print:p-0 print:border-none print:shadow-none print:rounded-none">
           <DialogHeader className="print:hidden">
             <div className="flex items-center justify-between">
               <div>
@@ -1110,8 +1128,8 @@ export default function InvoicingPage() {
             </div>
           </DialogHeader>
 
-          {/* Printable Invoice Sheet */}
-          <div className="border border-slate-900 p-6 rounded-lg bg-white text-slate-900 space-y-4 print:border-none print:p-0 font-sans">
+          {/* Printable Invoice Sheet (Clean, unconstrained A4 printable document) */}
+          <div id="printable-invoice-sheet" className="printable-sheet border border-slate-900 p-6 rounded-lg bg-white text-slate-900 space-y-4 print:border-none print:p-0 font-sans">
             {/* Header with Logo */}
             <div className="border-b-2 border-slate-900 pb-3 flex justify-between items-start gap-4">
               <div className="flex items-start gap-3">
@@ -1310,7 +1328,7 @@ export default function InvoicingPage() {
             <Button type="button" variant="outline" onClick={() => setOpenInvoiceModal(false)}>
               ปิดหน้าต่าง
             </Button>
-            <Button type="button" onClick={() => window.print()} className="bg-blue-600 hover:bg-blue-700 gap-2">
+            <Button type="button" onClick={handlePrintDocument} className="bg-blue-600 hover:bg-blue-700 gap-2">
               <Printer className="h-4 w-4" />
               พิมพ์ใบแจ้งหนี้ (Print Invoice)
             </Button>
@@ -1522,7 +1540,7 @@ export default function InvoicingPage() {
 
       {/* ================= MODAL: PAT LETTER ================= */}
       <Dialog open={openPatModal} onOpenChange={setOpenPatModal}>
-        <DialogContent className="sm:max-w-[750px] max-h-[90vh] overflow-y-auto">
+        <DialogContent className="sm:max-w-[750px] max-h-[90vh] overflow-y-auto print:max-w-none print:h-auto print:max-h-none print:p-0 print:border-none print:shadow-none print:rounded-none">
           <DialogHeader className="print:hidden">
             <DialogTitle className="flex items-center gap-2">
               <Anchor className="h-5 w-5 text-purple-600" />
@@ -1534,7 +1552,7 @@ export default function InvoicingPage() {
           </DialogHeader>
 
           {/* Printable Official PAT Letter */}
-          <div className="border border-slate-900 p-8 rounded-lg bg-white text-slate-900 space-y-5 print:border-none print:p-0 font-serif leading-relaxed">
+          <div className="printable-sheet border border-slate-900 p-8 rounded-lg bg-white text-slate-900 space-y-5 print:border-none print:p-0 font-serif leading-relaxed">
             {/* Letterhead with Logo */}
             <div className="flex justify-between items-start border-b pb-4">
               <div className="flex items-start gap-4">
@@ -1617,7 +1635,7 @@ export default function InvoicingPage() {
             <Button type="button" variant="outline" onClick={() => setOpenPatModal(false)}>
               ปิดหน้าต่าง
             </Button>
-            <Button type="button" onClick={() => window.print()} className="bg-purple-700 hover:bg-purple-800 text-white gap-2">
+            <Button type="button" onClick={handlePrintDocument} className="bg-purple-700 hover:bg-purple-800 text-white gap-2">
               <Printer className="h-4 w-4" />
               พิมพ์จดหมาย PAT Letter
             </Button>

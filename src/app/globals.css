@@ -128,3 +128,114 @@
     @apply font-sans;
   }
 }
+
+/* ================= PRINT ENGINE OPTIMIZATION ================= */
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 6mm 10mm 10mm 10mm;
+  }
+
+  html,
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  /* 1. Hide application shell, sidebar, and background main content when printing */
+  #app-shell,
+  aside,
+  nav,
+  header,
+  footer,
+  [data-slot="dialog-overlay"],
+  [data-slot="dialog-close"],
+  [data-slot="dialog-header"],
+  [data-slot="dialog-footer"],
+  .print-hidden,
+  .print\:hidden {
+    display: none !important;
+  }
+
+  /* When printing from modal, hide the normal page tree completely */
+  body:has([data-slot="dialog-content"]) #app-shell,
+  body:has([data-slot="dialog-content"]) main,
+  body.is-printing-invoice #app-shell,
+  body.is-printing-invoice main,
+  body.is-printing-invoice aside {
+    display: none !important;
+  }
+
+  /* 2. Un-constrain the dialog container so it behaves like a standard full-page A4 document */
+  [data-slot="dialog-portal"] {
+    display: block !important;
+    position: static !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 100% !important;
+  }
+
+  [data-slot="dialog-content"] {
+    display: block !important;
+    position: static !important;
+    transform: none !important;
+    top: auto !important;
+    left: auto !important;
+    right: auto !important;
+    bottom: auto !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    max-height: none !important;
+    height: auto !important;
+    overflow: visible !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    border: none !important;
+    box-shadow: none !important;
+    background: #ffffff !important;
+    ring: 0 !important;
+    outline: none !important;
+    border-radius: 0 !important;
+  }
+
+  /* 3. Invoice Printable Sheet Specific Styling */
+  .printable-sheet {
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: none !important;
+    box-shadow: none !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+
+  /* Keep table borders sharp and visible when printed */
+  .printable-sheet table {
+    width: 100% !important;
+    border-collapse: collapse !important;
+  }
+
+  .printable-sheet th,
+  .printable-sheet td {
+    border-color: #000000 !important;
+  }
+
+  /* Avoid page breaks inside the invoice document */
+  .printable-sheet,
+  .printable-sheet * {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  /* Enable high-fidelity background prints for badges and table headers */
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+}

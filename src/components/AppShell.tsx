@@ -14,7 +14,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="min-h-full flex bg-slate-50 text-slate-900 font-sans w-full">
+    <div id="app-shell" className="min-h-full flex bg-slate-50 text-slate-900 font-sans w-full">
       <Sidebar />
       <main className="flex-1 flex flex-col min-h-screen overflow-x-hidden">
         <RoleGuard>{children}</RoleGuard>

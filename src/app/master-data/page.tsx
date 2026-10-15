@@ -2,7 +2,9 @@
 
 import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
-import { Vehicle, Driver, Customer, Location, RateCard } from '@/types/database';
+import { Vehicle, Driver, Customer, Location, RateCard, VehicleType, ContainerSize, ContainerType, LocationType } from '@/types/database';
+import { logActivity } from '@/lib/audit-logger';
+import { useAuth } from '@/lib/auth-context';
 import { 
   Truck, 
   Users, 
@@ -11,11 +13,18 @@ import {
   BadgeDollarSign, 
   Plus, 
   Trash2, 
+  Edit3,
   RefreshCw,
   AlertTriangle,
   CheckCircle2,
   FileCheck,
-  Database
+  Database,
+  Download,
+  Printer,
+  Calendar,
+  ExternalLink,
+  ShieldCheck,
+  CreditCard
 } from 'lucide-react';
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -58,7 +67,26 @@ const locationTypeMap: Record<string, string> = {
   'other': 'อื่นๆ',
 };
 
+// CSV Export Helper
+function exportToCsv(filename: string, headers: string[], rows: (string | number)[][]) {
+  const bom = '\uFEFF';
+  const csvContent = bom + [
+    headers.map(h => `"${String(h).replace(/"/g, '""')}"`).join(','),
+    ...rows.map(r => r.map(c => `"${String(c ?? '').replace(/"/g, '""')}"`).join(','))
+  ].join('\r\n');
+  
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.setAttribute('href', url);
+  link.setAttribute('download', `${filename}_${new Date().toISOString().slice(0, 10)}.csv`);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
 export default function MasterDataPage() {
+  const { currentUser, currentRole } = useAuth();
   const [activeTab, setActiveTab] = useState('vehicles');
   const [loading, setLoading] = useState(false);
 
@@ -76,46 +104,71 @@ export default function MasterDataPage() {
   const [openLocationModal, setOpenLocationModal] = useState(false);
   const [openRateCardModal, setOpenRateCardModal] = useState(false);
 
+  // Editing State IDs (null when creating new)
+  const [editVehicleId, setEditVehicleId] = useState<string | null>(null);
+  const [editDriverId, setEditDriverId] = useState<string | null>(null);
+  const [editCustomerId, setEditCustomerId] = useState<string | null>(null);
+  const [editLocationId, setEditLocationId] = useState<string | null>(null);
+  const [editRateCardId, setEditRateCardId] = useState<string | null>(null);
+
   // Form States
   const [vehicleForm, setVehicleForm] = useState({
+    truck_name_id: '',
     plate_number: '',
-    vehicle_type: 'trailer',
+    truck_brand: 'Hino',
+    truck_model: 'S700',
+    register_year: '2565',
+    vehicle_type: 'trailer' as VehicleType,
     capacity_tons: '32',
-    iso_expiry_date: '',
+    driver_id: '',
+    tax_expiry_date: '',
     insurance_expiry_date: '',
     act_expiry_date: '',
-    status: 'active',
+    gps_brand: 'DTC GPS',
+    status: 'active' as 'active' | 'maintenance' | 'inactive',
   });
 
   const [driverForm, setDriverForm] = useState({
     name: '',
     phone: '',
+    id_number: '',
     license_number: '',
     license_expiry_date: '',
     daily_rate: '600',
-    status: 'available',
+    status: 'available' as 'available' | 'on_job' | 'leave' | 'inactive',
   });
 
   const [customerForm, setCustomerForm] = useState({
     company_name: '',
+    branch: 'สำนักงานใหญ่',
     tax_id: '',
     contact_name: '',
     phone: '',
     email: '',
     address: '',
+    credit_term_days: '30',
+    shipper_name: '',
+    commodity_name: '',
   });
 
   const [locationForm, setLocationForm] = useState({
     name: '',
-    location_type: 'depot',
+    location_type: 'depot' as LocationType,
     province: '',
     address: '',
+    contact_name: '',
+    phone: '',
+    location_map: '',
+    location_remark: '',
   });
 
   const [rateCardForm, setRateCardForm] = useState({
+    customer_id: '',
     origin_id: '',
     destination_id: '',
-    vehicle_type: 'trailer',
+    container_size: '40' as ContainerSize,
+    container_type: 'HC' as ContainerType,
+    vehicle_type: 'trailer' as VehicleType,
     base_price: '5500',
     fuel_cost_est: '1800',
     toll_fee_est: '200',
@@ -127,11 +180,11 @@ export default function MasterDataPage() {
     setLoading(true);
     try {
       const [vRes, dRes, cRes, lRes, rRes] = await Promise.all([
-        supabase.from('vehicles').select('*').order('created_at', { ascending: false }),
+        supabase.from('vehicles').select('*, driver:drivers(*)').order('created_at', { ascending: false }),
         supabase.from('drivers').select('*').order('created_at', { ascending: false }),
         supabase.from('customers').select('*').order('created_at', { ascending: false }),
         supabase.from('locations').select('*').order('name', { ascending: true }),
-        supabase.from('rate_cards').select('*, origin:locations!origin_id(*), destination:locations!destination_id(*)'),
+        supabase.from('rate_cards').select('*, customer:customers(*), origin:locations!origin_id(*), destination:locations!destination_id(*)'),
       ]);
 
       if (vRes.data) setVehicles(vRes.data);
@@ -150,131 +203,543 @@ export default function MasterDataPage() {
     fetchData();
   }, []);
 
-  // Add Handlers
-  const handleAddVehicle = async (e: React.FormEvent) => {
+  // -------------------------------------------------------------------
+  // 1. VEHICLE HANDLERS
+  // -------------------------------------------------------------------
+  const handleOpenAddVehicle = () => {
+    setEditVehicleId(null);
+    setVehicleForm({
+      truck_name_id: `รถคัน-${vehicles.length + 1}`,
+      plate_number: '',
+      truck_brand: 'Hino',
+      truck_model: 'S700',
+      register_year: '2565',
+      vehicle_type: 'trailer',
+      capacity_tons: '32',
+      driver_id: '',
+      tax_expiry_date: '',
+      insurance_expiry_date: '',
+      act_expiry_date: '',
+      gps_brand: 'DTC GPS',
+      status: 'active',
+    });
+    setOpenVehicleModal(true);
+  };
+
+  const handleOpenEditVehicle = (v: Vehicle) => {
+    setEditVehicleId(v.id);
+    setVehicleForm({
+      truck_name_id: v.truck_name_id || '',
+      plate_number: v.plate_number || '',
+      truck_brand: v.truck_brand || 'Hino',
+      truck_model: v.truck_model || '',
+      register_year: v.register_year || '',
+      vehicle_type: v.vehicle_type || 'trailer',
+      capacity_tons: String(v.capacity_tons || 32),
+      driver_id: v.driver_id || '',
+      tax_expiry_date: v.tax_expiry_date || '',
+      insurance_expiry_date: v.insurance_expiry_date || '',
+      act_expiry_date: v.act_expiry_date || '',
+      gps_brand: v.gps_brand || '',
+      status: v.status || 'active',
+    });
+    setOpenVehicleModal(true);
+  };
+
+  const handleSaveVehicle = async (e: React.FormEvent) => {
     e.preventDefault();
-    const { error } = await supabase.from('vehicles').insert([
-      {
-        plate_number: vehicleForm.plate_number,
-        vehicle_type: vehicleForm.vehicle_type,
-        capacity_tons: parseFloat(vehicleForm.capacity_tons) || 0,
-        iso_expiry_date: vehicleForm.iso_expiry_date || null,
-        insurance_expiry_date: vehicleForm.insurance_expiry_date || null,
-        act_expiry_date: vehicleForm.act_expiry_date || null,
-        status: vehicleForm.status,
-      },
+    const payload = {
+      truck_name_id: vehicleForm.truck_name_id || `รถคัน-${vehicleForm.plate_number.slice(0, 4)}`,
+      plate_number: vehicleForm.plate_number,
+      truck_brand: vehicleForm.truck_brand,
+      truck_model: vehicleForm.truck_model,
+      register_year: vehicleForm.register_year,
+      vehicle_type: vehicleForm.vehicle_type,
+      capacity_tons: parseFloat(vehicleForm.capacity_tons) || 0,
+      driver_id: vehicleForm.driver_id || null,
+      tax_expiry_date: vehicleForm.tax_expiry_date || null,
+      insurance_expiry_date: vehicleForm.insurance_expiry_date || null,
+      act_expiry_date: vehicleForm.act_expiry_date || null,
+      gps_brand: vehicleForm.gps_brand,
+      status: vehicleForm.status,
+    };
+
+    if (editVehicleId) {
+      const { error } = await supabase.from('vehicles').update(payload).eq('id', editVehicleId);
+      if (!error) {
+        logActivity({
+          user_id: currentUser?.id || 'sys',
+          user_name: currentUser?.name || 'User',
+          user_role: currentRole?.id || 'admin',
+          action: 'UPDATE',
+          module: 'MASTER_DATA',
+          description: `แก้ไขข้อมูลรถบรรทุก: ${payload.truck_name_id} (${payload.plate_number})`,
+        });
+        setOpenVehicleModal(false);
+        fetchData();
+      } else {
+        alert('เกิดข้อผิดพลาดในการแก้ไข: ' + error.message);
+      }
+    } else {
+      const { error } = await supabase.from('vehicles').insert([payload]);
+      if (!error) {
+        logActivity({
+          user_id: currentUser?.id || 'sys',
+          user_name: currentUser?.name || 'User',
+          user_role: currentRole?.id || 'admin',
+          action: 'CREATE',
+          module: 'MASTER_DATA',
+          description: `เพิ่มรถบรรทุกใหม่: ${payload.truck_name_id} (${payload.plate_number}) ผูกคนขับ`,
+        });
+        setOpenVehicleModal(false);
+        fetchData();
+      } else {
+        alert('เกิดข้อผิดพลาดในการบันทึก: ' + error.message);
+      }
+    }
+  };
+
+  const exportVehiclesCsv = () => {
+    const headers = ['รหัสย่อ', 'ป้ายทะเบียน', 'ยี่ห้อ', 'รุ่น', 'ปีจดทะเบียน', 'ชนิดรถ', 'น้ำหนัก(ตัน)', 'คนขับประจำรถ', 'วันหมดอายุภาษี', 'พรบ.', 'ประกันภัย', 'GPS', 'สถานะ'];
+    const rows = vehicles.map(v => [
+      v.truck_name_id || '-',
+      v.plate_number,
+      v.truck_brand || '-',
+      v.truck_model || '-',
+      v.register_year || '-',
+      vehicleTypeMap[v.vehicle_type] || v.vehicle_type,
+      v.capacity_tons,
+      v.driver?.name || 'ยังไม่ผูกคนขับ',
+      v.tax_expiry_date || '-',
+      v.act_expiry_date || '-',
+      v.insurance_expiry_date || '-',
+      v.gps_brand || '-',
+      v.status
     ]);
-    if (!error) {
-      setOpenVehicleModal(false);
-      setVehicleForm({
-        plate_number: '',
-        vehicle_type: 'trailer',
-        capacity_tons: '32',
-        iso_expiry_date: '',
-        insurance_expiry_date: '',
-        act_expiry_date: '',
-        status: 'active',
-      });
-      fetchData();
+    exportToCsv('Vehicles_Master', headers, rows);
+  };
+
+  // -------------------------------------------------------------------
+  // 2. DRIVER HANDLERS
+  // -------------------------------------------------------------------
+  const handleOpenAddDriver = () => {
+    setEditDriverId(null);
+    setDriverForm({
+      name: '',
+      phone: '',
+      id_number: '',
+      license_number: '',
+      license_expiry_date: '',
+      daily_rate: '600',
+      status: 'available',
+    });
+    setOpenDriverModal(true);
+  };
+
+  const handleOpenEditDriver = (d: Driver) => {
+    setEditDriverId(d.id);
+    setDriverForm({
+      name: d.name || '',
+      phone: d.phone || '',
+      id_number: d.id_number || '',
+      license_number: d.license_number || '',
+      license_expiry_date: d.license_expiry_date || '',
+      daily_rate: String(d.daily_rate || 600),
+      status: d.status || 'available',
+    });
+    setOpenDriverModal(true);
+  };
+
+  const handleSaveDriver = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const payload = {
+      name: driverForm.name,
+      phone: driverForm.phone,
+      id_number: driverForm.id_number || null,
+      license_number: driverForm.license_number,
+      license_expiry_date: driverForm.license_expiry_date || null,
+      daily_rate: parseFloat(driverForm.daily_rate) || 500,
+      status: driverForm.status,
+    };
+
+    if (editDriverId) {
+      const { error } = await supabase.from('drivers').update(payload).eq('id', editDriverId);
+      if (!error) {
+        logActivity({
+          user_id: currentUser?.id || 'sys',
+          user_name: currentUser?.name || 'User',
+          user_role: currentRole?.id || 'admin',
+          action: 'UPDATE',
+          module: 'MASTER_DATA',
+          description: `แก้ไขข้อมูล พขร.: ${payload.name}`,
+        });
+        setOpenDriverModal(false);
+        fetchData();
+      } else {
+        alert('เกิดข้อผิดพลาด: ' + error.message);
+      }
     } else {
-      alert('เกิดข้อผิดพลาด: ' + error.message);
+      const { error } = await supabase.from('drivers').insert([payload]);
+      if (!error) {
+        logActivity({
+          user_id: currentUser?.id || 'sys',
+          user_name: currentUser?.name || 'User',
+          user_role: currentRole?.id || 'admin',
+          action: 'CREATE',
+          module: 'MASTER_DATA',
+          description: `เพิ่ม พขร. ใหม่: ${payload.name}`,
+        });
+        setOpenDriverModal(false);
+        fetchData();
+      } else {
+        alert('เกิดข้อผิดพลาด: ' + error.message);
+      }
     }
   };
 
-  const handleAddDriver = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const { error } = await supabase.from('drivers').insert([
-      {
-        name: driverForm.name,
-        phone: driverForm.phone,
-        license_number: driverForm.license_number,
-        license_expiry_date: driverForm.license_expiry_date || null,
-        daily_rate: parseFloat(driverForm.daily_rate) || 500,
-        status: driverForm.status,
-      },
+  const exportDriversCsv = () => {
+    const headers = ['ชื่อ - นามสกุล', 'เบอร์โทรศัพท์', 'เลขบัตรประชาชน', 'เลขที่ใบขับขี่', 'วันหมดอายุใบขับขี่', 'เบี้ยเลี้ยงมาตรฐาน', 'สถานะ'];
+    const rows = drivers.map(d => [
+      d.name,
+      d.phone || '-',
+      d.id_number || '-',
+      d.license_number || '-',
+      d.license_expiry_date || '-',
+      d.daily_rate,
+      d.status
     ]);
-    if (!error) {
-      setOpenDriverModal(false);
-      setDriverForm({
-        name: '',
-        phone: '',
-        license_number: '',
-        license_expiry_date: '',
-        daily_rate: '600',
-        status: 'available',
-      });
-      fetchData();
-    } else {
-      alert('เกิดข้อผิดพลาด: ' + error.message);
-    }
+    exportToCsv('Drivers_Master', headers, rows);
   };
 
-  const handleAddCustomer = async (e: React.FormEvent) => {
+  // -------------------------------------------------------------------
+  // 3. CUSTOMER HANDLERS
+  // -------------------------------------------------------------------
+  const handleOpenAddCustomer = () => {
+    setEditCustomerId(null);
+    setCustomerForm({
+      company_name: '',
+      branch: 'สำนักงานใหญ่',
+      tax_id: '',
+      contact_name: '',
+      phone: '',
+      email: '',
+      address: '',
+      credit_term_days: '30',
+      shipper_name: '',
+      commodity_name: '',
+    });
+    setOpenCustomerModal(true);
+  };
+
+  const handleOpenEditCustomer = (c: Customer) => {
+    setEditCustomerId(c.id);
+    setCustomerForm({
+      company_name: c.company_name || '',
+      branch: c.branch || 'สำนักงานใหญ่',
+      tax_id: c.tax_id || '',
+      contact_name: c.contact_name || '',
+      phone: c.phone || '',
+      email: c.email || '',
+      address: c.address || '',
+      credit_term_days: String(c.credit_term_days || 30),
+      shipper_name: c.shipper_name || '',
+      commodity_name: c.commodity_name || '',
+    });
+    setOpenCustomerModal(true);
+  };
+
+  const handleSaveCustomer = async (e: React.FormEvent) => {
     e.preventDefault();
-    const { error } = await supabase.from('customers').insert([customerForm]);
-    if (!error) {
-      setOpenCustomerModal(false);
-      setCustomerForm({
-        company_name: '',
-        tax_id: '',
-        contact_name: '',
-        phone: '',
-        email: '',
-        address: '',
-      });
-      fetchData();
+    const payload = {
+      company_name: customerForm.company_name,
+      branch: customerForm.branch || 'สำนักงานใหญ่',
+      tax_id: customerForm.tax_id,
+      contact_name: customerForm.contact_name,
+      phone: customerForm.phone,
+      email: customerForm.email,
+      address: customerForm.address,
+      credit_term_days: parseInt(customerForm.credit_term_days) || 30,
+      shipper_name: customerForm.shipper_name || null,
+      commodity_name: customerForm.commodity_name || null,
+    };
+
+    if (editCustomerId) {
+      const { error } = await supabase.from('customers').update(payload).eq('id', editCustomerId);
+      if (!error) {
+        logActivity({
+          user_id: currentUser?.id || 'sys',
+          user_name: currentUser?.name || 'User',
+          user_role: currentRole?.id || 'admin',
+          action: 'UPDATE',
+          module: 'MASTER_DATA',
+          description: `แก้ไขข้อมูลลูกค้า: ${payload.company_name}`,
+        });
+        setOpenCustomerModal(false);
+        fetchData();
+      } else {
+        alert('เกิดข้อผิดพลาด: ' + error.message);
+      }
     } else {
-      alert('เกิดข้อผิดพลาด: ' + error.message);
+      const { error } = await supabase.from('customers').insert([payload]);
+      if (!error) {
+        logActivity({
+          user_id: currentUser?.id || 'sys',
+          user_name: currentUser?.name || 'User',
+          user_role: currentRole?.id || 'admin',
+          action: 'CREATE',
+          module: 'MASTER_DATA',
+          description: `เพิ่มลูกค้าใหม่: ${payload.company_name}`,
+        });
+        setOpenCustomerModal(false);
+        fetchData();
+      } else {
+        alert('เกิดข้อผิดพลาด: ' + error.message);
+      }
     }
   };
 
-  const handleAddLocation = async (e: React.FormEvent) => {
+  const exportCustomersCsv = () => {
+    const headers = ['ชื่อบริษัทลูกค้า', 'สาขา', 'เลขผู้เสียภาษี 13 หลัก', 'ผู้ติดต่อ', 'เบอร์โทร', 'อีเมล', 'ที่อยู่ ภ.พ.20', 'เครดิตเทอม(วัน)', 'Shipper ประจำ', 'สินค้า'];
+    const rows = customers.map(c => [
+      c.company_name,
+      c.branch || 'สำนักงานใหญ่',
+      c.tax_id || '-',
+      c.contact_name || '-',
+      c.phone || '-',
+      c.email || '-',
+      c.address || '-',
+      c.credit_term_days || 30,
+      c.shipper_name || '-',
+      c.commodity_name || '-'
+    ]);
+    exportToCsv('Customers_Master', headers, rows);
+  };
+
+  // -------------------------------------------------------------------
+  // 4. LOCATION HANDLERS
+  // -------------------------------------------------------------------
+  const handleOpenAddLocation = () => {
+    setEditLocationId(null);
+    setLocationForm({
+      name: '',
+      location_type: 'depot',
+      province: '',
+      address: '',
+      contact_name: '',
+      phone: '',
+      location_map: '',
+      location_remark: '',
+    });
+    setOpenLocationModal(true);
+  };
+
+  const handleOpenEditLocation = (l: Location) => {
+    setEditLocationId(l.id);
+    setLocationForm({
+      name: l.name || '',
+      location_type: l.location_type || 'depot',
+      province: l.province || '',
+      address: l.address || '',
+      contact_name: l.contact_name || '',
+      phone: l.phone || '',
+      location_map: l.location_map || '',
+      location_remark: l.location_remark || '',
+    });
+    setOpenLocationModal(true);
+  };
+
+  const handleSaveLocation = async (e: React.FormEvent) => {
     e.preventDefault();
-    const { error } = await supabase.from('locations').insert([locationForm]);
-    if (!error) {
-      setOpenLocationModal(false);
-      setLocationForm({
-        name: '',
-        location_type: 'depot',
-        province: '',
-        address: '',
-      });
-      fetchData();
+    const payload = {
+      name: locationForm.name,
+      location_type: locationForm.location_type,
+      province: locationForm.province,
+      address: locationForm.address,
+      contact_name: locationForm.contact_name || null,
+      phone: locationForm.phone || null,
+      location_map: locationForm.location_map || null,
+      location_remark: locationForm.location_remark || null,
+    };
+
+    if (editLocationId) {
+      const { error } = await supabase.from('locations').update(payload).eq('id', editLocationId);
+      if (!error) {
+        logActivity({
+          user_id: currentUser?.id || 'sys',
+          user_name: currentUser?.name || 'User',
+          user_role: currentRole?.id || 'admin',
+          action: 'UPDATE',
+          module: 'MASTER_DATA',
+          description: `แก้ไขสถานที่: ${payload.name}`,
+        });
+        setOpenLocationModal(false);
+        fetchData();
+      } else {
+        alert('เกิดข้อผิดพลาด: ' + error.message);
+      }
     } else {
-      alert('เกิดข้อผิดพลาด: ' + error.message);
+      const { error } = await supabase.from('locations').insert([payload]);
+      if (!error) {
+        logActivity({
+          user_id: currentUser?.id || 'sys',
+          user_name: currentUser?.name || 'User',
+          user_role: currentRole?.id || 'admin',
+          action: 'CREATE',
+          module: 'MASTER_DATA',
+          description: `เพิ่มสถานที่ใหม่: ${payload.name}`,
+        });
+        setOpenLocationModal(false);
+        fetchData();
+      } else {
+        alert('เกิดข้อผิดพลาด: ' + error.message);
+      }
     }
   };
 
-  const handleAddRateCard = async (e: React.FormEvent) => {
+  const exportLocationsCsv = () => {
+    const headers = ['ชื่อสถานที่', 'ประเภทสถานที่', 'จังหวัด', 'ที่อยู่', 'ผู้ประสานงาน', 'เบอร์โทร', 'พิกัด GPS/Map', 'จุดสังเกต'];
+    const rows = locations.map(l => [
+      l.name,
+      locationTypeMap[l.location_type] || l.location_type,
+      l.province || '-',
+      l.address || '-',
+      l.contact_name || '-',
+      l.phone || '-',
+      l.location_map || '-',
+      l.location_remark || '-'
+    ]);
+    exportToCsv('Locations_Master', headers, rows);
+  };
+
+  // -------------------------------------------------------------------
+  // 5. RATE CARD HANDLERS
+  // -------------------------------------------------------------------
+  const handleOpenAddRateCard = () => {
+    setEditRateCardId(null);
+    setRateCardForm({
+      customer_id: '',
+      origin_id: locations[0]?.id || '',
+      destination_id: locations[1]?.id || '',
+      container_size: '40',
+      container_type: 'HC',
+      vehicle_type: 'trailer',
+      base_price: '5500',
+      fuel_cost_est: '1800',
+      toll_fee_est: '200',
+      driver_fee_est: '600',
+    });
+    setOpenRateCardModal(true);
+  };
+
+  const handleOpenEditRateCard = (r: RateCard) => {
+    setEditRateCardId(r.id);
+    setRateCardForm({
+      customer_id: r.customer_id || '',
+      origin_id: r.origin_id || '',
+      destination_id: r.destination_id || '',
+      container_size: (r.container_size as ContainerSize) || '40',
+      container_type: (r.container_type as ContainerType) || 'HC',
+      vehicle_type: r.vehicle_type || 'trailer',
+      base_price: String(r.base_price || 0),
+      fuel_cost_est: String(r.fuel_cost_est || 0),
+      toll_fee_est: String(r.toll_fee_est || 0),
+      driver_fee_est: String(r.driver_fee_est || 0),
+    });
+    setOpenRateCardModal(true);
+  };
+
+  const handleSaveRateCard = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!rateCardForm.origin_id || !rateCardForm.destination_id) {
-      alert('กรุณาเลือกต้นทางและปลายทาง');
+      alert('กรุณาเลือกสถานที่ต้นทางและปลายทาง');
       return;
     }
-    const { error } = await supabase.from('rate_cards').insert([
-      {
-        origin_id: rateCardForm.origin_id,
-        destination_id: rateCardForm.destination_id,
-        vehicle_type: rateCardForm.vehicle_type,
-        base_price: parseFloat(rateCardForm.base_price) || 0,
-        fuel_cost_est: parseFloat(rateCardForm.fuel_cost_est) || 0,
-        toll_fee_est: parseFloat(rateCardForm.toll_fee_est) || 0,
-        driver_fee_est: parseFloat(rateCardForm.driver_fee_est) || 0,
-      },
-    ]);
-    if (!error) {
-      setOpenRateCardModal(false);
-      fetchData();
+
+    const payload = {
+      customer_id: rateCardForm.customer_id || null,
+      origin_id: rateCardForm.origin_id,
+      destination_id: rateCardForm.destination_id,
+      container_size: rateCardForm.container_size,
+      container_type: rateCardForm.container_type,
+      vehicle_type: rateCardForm.vehicle_type,
+      base_price: parseFloat(rateCardForm.base_price) || 0,
+      fuel_cost_est: parseFloat(rateCardForm.fuel_cost_est) || 0,
+      toll_fee_est: parseFloat(rateCardForm.toll_fee_est) || 0,
+      driver_fee_est: parseFloat(rateCardForm.driver_fee_est) || 0,
+    };
+
+    if (editRateCardId) {
+      const { error } = await supabase.from('rate_cards').update(payload).eq('id', editRateCardId);
+      if (!error) {
+        logActivity({
+          user_id: currentUser?.id || 'sys',
+          user_name: currentUser?.name || 'User',
+          user_role: currentRole?.id || 'admin',
+          action: 'UPDATE',
+          module: 'MASTER_DATA',
+          description: `แก้ไขเรทราคาเส้นทาง: ฿${payload.base_price}`,
+        });
+        setOpenRateCardModal(false);
+        fetchData();
+      } else {
+        alert('เกิดข้อผิดพลาด: ' + error.message);
+      }
     } else {
-      alert('เกิดข้อผิดพลาด: ' + error.message);
+      const { error } = await supabase.from('rate_cards').insert([payload]);
+      if (!error) {
+        logActivity({
+          user_id: currentUser?.id || 'sys',
+          user_name: currentUser?.name || 'User',
+          user_role: currentRole?.id || 'admin',
+          action: 'CREATE',
+          module: 'MASTER_DATA',
+          description: `สร้างเรทราคาใหม่: ฿${payload.base_price}`,
+        });
+        setOpenRateCardModal(false);
+        fetchData();
+      } else {
+        alert('เกิดข้อผิดพลาด: ' + error.message);
+      }
     }
   };
 
-  // Delete Handler
-  const handleDelete = async (table: string, id: string) => {
-    if (!confirm('ยืนยันที่จะลบข้อมูลรายการนี้หรือไม่?')) return;
+  const exportRatesCsv = () => {
+    const headers = ['ลูกค้า', 'ต้นทาง', 'ปลายทาง', 'ขนาดตู้', 'ชนิดตู้', 'ประเภทรถ', 'ราคาเรียกเก็บ(บาท)', 'น้ำมันประมาณการ', 'ทางด่วนประมาณการ', 'ค่าแรง พขร.', 'กำไรประมาณการ'];
+    const rows = rateCards.map(r => {
+      const totalCost = Number(r.fuel_cost_est || 0) + Number(r.toll_fee_est || 0) + Number(r.driver_fee_est || 0);
+      const profit = Number(r.base_price || 0) - totalCost;
+      return [
+        r.customer?.company_name || 'เรททั่วไป (ทุกราย)',
+        r.origin?.name || '-',
+        r.destination?.name || '-',
+        r.container_size ? `${r.container_size}'` : '-',
+        r.container_type || '-',
+        vehicleTypeMap[r.vehicle_type] || r.vehicle_type,
+        r.base_price,
+        r.fuel_cost_est,
+        r.toll_fee_est,
+        r.driver_fee_est,
+        profit
+      ];
+    });
+    exportToCsv('RateCards_Master', headers, rows);
+  };
+
+  // -------------------------------------------------------------------
+  // DELETE HANDLER (SHARED)
+  // -------------------------------------------------------------------
+  const handleDelete = async (table: string, id: string, nameDesc: string) => {
+    if (!confirm(`ยืนยันที่จะลบข้อมูล "${nameDesc}" หรือไม่?`)) return;
     const { error } = await supabase.from(table).delete().eq('id', id);
     if (!error) {
+      logActivity({
+        user_id: currentUser?.id || 'sys',
+        user_name: currentUser?.name || 'User',
+        user_role: currentRole?.id || 'admin',
+        action: 'DELETE',
+        module: 'MASTER_DATA',
+        description: `ลบข้อมูลใน ${table}: ${nameDesc}`,
+      });
       fetchData();
     } else {
       alert('ไม่สามารถลบได้เนื่องจากมีการใช้งานข้อมูลนี้อยู่ในส่วนอื่น: ' + error.message);
@@ -291,19 +756,30 @@ export default function MasterDataPage() {
             การจัดการข้อมูลหลัก (Master Data Management)
           </h1>
           <p className="text-slate-500 text-sm mt-1">
-            Module 0: จัดการข้อมูลพื้นฐานของรถบรรทุก, พนักงานขับรถ, ลูกค้า, สถานที่ และเรทราคามาตรฐาน
+            Module 0: จัดการข้อมูลพื้นฐานของรถบรรทุก, การผูกรถกับคนขับประจำรถ, ลูกค้า, สถานที่ และเรทราคามาตรฐาน
           </p>
         </div>
-        <Button 
-          variant="outline" 
-          size="sm" 
-          onClick={fetchData} 
-          disabled={loading}
-          className="gap-2 self-start md:self-auto"
-        >
-          <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-          รีเฟรชข้อมูล
-        </Button>
+        <div className="flex items-center gap-2 self-start md:self-auto">
+          <Button 
+            variant="outline" 
+            size="sm" 
+            onClick={fetchData} 
+            disabled={loading}
+            className="gap-2"
+          >
+            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+            รีเฟรชข้อมูล
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => window.print()}
+            className="gap-2"
+          >
+            <Printer className="h-4 w-4" />
+            พิมพ์รายงาน
+          </Button>
+        </div>
       </div>
 
       {/* Main Tabs */}
@@ -338,28 +814,35 @@ export default function MasterDataPage() {
         {/* ================= TAB 1: VEHICLES ================= */}
         <TabsContent value="vehicles">
           <Card>
-            <CardHeader className="flex flex-row items-center justify-between">
+            <CardHeader className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div>
                 <CardTitle className="text-lg">รายการรถบรรทุก (Vehicles)</CardTitle>
                 <CardDescription>
-                  ข้อมูลทะเบียน, ชนิดรถ, และการติดตามวันหมดอายุเอกสาร ISO 39001, ประกันภัย, พรบ.
+                  รหัสอ้างอิงรถย่อ (เช่น รถคัน-1) ผูกกับคนขับประจำรถ, ทะเบียน, ติดตามวันหมดอายุภาษี/พรบ./ประกัน
                 </CardDescription>
               </div>
-              <Button onClick={() => setOpenVehicleModal(true)} className="gap-2 bg-blue-600 hover:bg-blue-700">
-                <Plus className="h-4 w-4" /> เพิ่มรถบรรทุก
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" onClick={exportVehiclesCsv} className="gap-1.5 text-xs">
+                  <Download className="h-3.5 w-3.5" /> Export CSV
+                </Button>
+                <Button onClick={handleOpenAddVehicle} className="gap-1.5 bg-blue-600 hover:bg-blue-700 text-xs">
+                  <Plus className="h-3.5 w-3.5" /> เพิ่มรถบรรทุก
+                </Button>
+              </div>
             </CardHeader>
             <CardContent>
               <div className="rounded-md border overflow-x-auto">
                 <Table>
                   <TableHeader>
-                    <TableRow>
-                      <TableHead>ทะเบียนรถ</TableHead>
-                      <TableHead>ประเภทรถ</TableHead>
-                      <TableHead>ความจุ (ตัน)</TableHead>
-                      <TableHead>ตรวจสภาพ ISO 39001</TableHead>
-                      <TableHead>วันหมดอายุประกันภัย</TableHead>
-                      <TableHead>วันหมดอายุ พรบ.</TableHead>
+                    <TableRow className="bg-slate-50">
+                      <TableHead className="font-bold text-blue-900">รหัสรถย่อ</TableHead>
+                      <TableHead className="font-bold">ป้ายทะเบียน</TableHead>
+                      <TableHead>ยี่ห้อ / รุ่น / ปี</TableHead>
+                      <TableHead className="font-bold text-slate-900">คนขับประจำรถ</TableHead>
+                      <TableHead>ชนิดรถ</TableHead>
+                      <TableHead>ภาษีป้ายวงกลม</TableHead>
+                      <TableHead>พรบ. ขนส่ง</TableHead>
+                      <TableHead>ประกันภัย</TableHead>
                       <TableHead>สถานะ</TableHead>
                       <TableHead className="text-right">จัดการ</TableHead>
                     </TableRow>
@@ -367,49 +850,71 @@ export default function MasterDataPage() {
                   <TableBody>
                     {vehicles.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={8} className="text-center py-6 text-slate-500">
-                          ยังไม่มีข้อมูลรถบรรทุก
+                        <TableCell colSpan={10} className="text-center py-6 text-slate-500">
+                          ไม่พบข้อมูลรถบรรทุกในระบบ
                         </TableCell>
                       </TableRow>
                     ) : (
-                      vehicles.map((v) => (
-                        <TableRow key={v.id}>
+                      vehicles.map((v, idx) => (
+                        <TableRow key={v.id} className="hover:bg-slate-50">
+                          <TableCell className="font-bold">
+                            <span className="px-2.5 py-1 bg-blue-50 text-blue-700 rounded-md border border-blue-200 text-xs font-mono">
+                              {v.truck_name_id || `รถคัน-${idx + 1}`}
+                            </span>
+                          </TableCell>
                           <TableCell className="font-semibold text-slate-900">{v.plate_number}</TableCell>
-                          <TableCell>{vehicleTypeMap[v.vehicle_type] || v.vehicle_type}</TableCell>
-                          <TableCell>{v.capacity_tons} ตัน</TableCell>
-                          <TableCell>
-                            <span className="text-xs bg-slate-100 text-slate-700 px-2 py-1 rounded">
-                              {v.iso_expiry_date || '-'}
-                            </span>
+                          <TableCell className="text-xs text-slate-600">
+                            {v.truck_brand || 'Hino'} {v.truck_model || ''} {v.register_year ? `(${v.register_year})` : ''}
                           </TableCell>
                           <TableCell>
-                            <span className="text-xs bg-slate-100 text-slate-700 px-2 py-1 rounded">
-                              {v.insurance_expiry_date || '-'}
-                            </span>
-                          </TableCell>
-                          <TableCell>
-                            <span className="text-xs bg-slate-100 text-slate-700 px-2 py-1 rounded">
-                              {v.act_expiry_date || '-'}
-                            </span>
-                          </TableCell>
-                          <TableCell>
-                            {v.status === 'active' ? (
-                              <Badge className="bg-emerald-600 hover:bg-emerald-700">พร้อมใช้งาน</Badge>
-                            ) : v.status === 'maintenance' ? (
-                              <Badge variant="secondary" className="bg-amber-100 text-amber-800">เข้าซ่อม</Badge>
+                            {v.driver ? (
+                              <div className="text-xs">
+                                <div className="font-semibold text-slate-900">{v.driver.name}</div>
+                                <div className="text-slate-500 text-[11px]">{v.driver.phone || '-'}</div>
+                              </div>
                             ) : (
-                              <Badge variant="outline">ไม่พร้อมใช้</Badge>
+                              <span className="text-xs text-amber-600 italic">ยังไม่ผูกคนขับ</span>
                             )}
                           </TableCell>
-                          <TableCell className="text-right">
-                            <Button 
-                              variant="ghost" 
-                              size="icon" 
-                              onClick={() => handleDelete('vehicles', v.id)}
-                              className="text-red-500 hover:text-red-700 hover:bg-red-50"
+                          <TableCell className="text-xs text-slate-600">
+                            {vehicleTypeMap[v.vehicle_type] || v.vehicle_type} ({v.capacity_tons} ตัน)
+                          </TableCell>
+                          <TableCell className="text-xs font-mono">
+                            {v.tax_expiry_date || '-'}
+                          </TableCell>
+                          <TableCell className="text-xs font-mono">
+                            {v.act_expiry_date || '-'}
+                          </TableCell>
+                          <TableCell className="text-xs font-mono">
+                            {v.insurance_expiry_date || '-'}
+                          </TableCell>
+                          <TableCell>
+                            <Badge 
+                              variant={v.status === 'active' ? 'default' : v.status === 'maintenance' ? 'destructive' : 'secondary'}
+                              className="text-[11px]"
                             >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
+                              {v.status === 'active' ? 'พร้อมใช้' : v.status === 'maintenance' ? 'เข้าซ่อม' : 'ปิดการใช้งาน'}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-right whitespace-nowrap">
+                            <div className="flex items-center justify-end gap-1">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => handleOpenEditVehicle(v)}
+                                className="h-8 w-8 p-0 text-slate-600 hover:text-blue-600"
+                              >
+                                <Edit3 className="h-3.5 w-3.5" />
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => handleDelete('vehicles', v.id, v.truck_name_id || v.plate_number)}
+                                className="h-8 w-8 p-0 text-slate-400 hover:text-rose-600"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
                           </TableCell>
                         </TableRow>
                       ))
@@ -424,25 +929,33 @@ export default function MasterDataPage() {
         {/* ================= TAB 2: DRIVERS ================= */}
         <TabsContent value="drivers">
           <Card>
-            <CardHeader className="flex flex-row items-center justify-between">
+            <CardHeader className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div>
-                <CardTitle className="text-lg">พนักงานขับรถ (Drivers / พขร.)</CardTitle>
-                <CardDescription>รายชื่อพนักงานขับรถ, ข้อมูลใบขับขี่ และเบอร์โทรศัพท์ติดต่อ</CardDescription>
+                <CardTitle className="text-lg">พนักงานขับรถ / พขร. (Drivers)</CardTitle>
+                <CardDescription>
+                  ข้อมูลชื่อ, เบอร์โทร, เลขประจำตัวประชาชน 13 หลัก, ใบอนุญาตขับขี่ ท.4 และเบี้ยเลี้ยงมาตรฐาน
+                </CardDescription>
               </div>
-              <Button onClick={() => setOpenDriverModal(true)} className="gap-2 bg-blue-600 hover:bg-blue-700">
-                <Plus className="h-4 w-4" /> เพิ่ม พขร.
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" onClick={exportDriversCsv} className="gap-1.5 text-xs">
+                  <Download className="h-3.5 w-3.5" /> Export CSV
+                </Button>
+                <Button onClick={handleOpenAddDriver} className="gap-1.5 bg-blue-600 hover:bg-blue-700 text-xs">
+                  <Plus className="h-3.5 w-3.5" /> เพิ่ม พขร.
+                </Button>
+              </div>
             </CardHeader>
             <CardContent>
               <div className="rounded-md border overflow-x-auto">
                 <Table>
                   <TableHeader>
-                    <TableRow>
-                      <TableHead>ชื่อ - นามสกุล</TableHead>
+                    <TableRow className="bg-slate-50">
+                      <TableHead className="font-bold">ชื่อ - นามสกุล</TableHead>
                       <TableHead>เบอร์โทรศัพท์</TableHead>
+                      <TableHead>เลขบัตรประชาชน (13 หลัก)</TableHead>
                       <TableHead>เลขที่ใบขับขี่</TableHead>
                       <TableHead>วันหมดอายุใบขับขี่</TableHead>
-                      <TableHead>เบี้ยเลี้ยงพื้นฐาน (บาท/วัน)</TableHead>
+                      <TableHead className="text-right">เบี้ยเลี้ยงพื้นฐาน</TableHead>
                       <TableHead>สถานะ</TableHead>
                       <TableHead className="text-right">จัดการ</TableHead>
                     </TableRow>
@@ -450,36 +963,45 @@ export default function MasterDataPage() {
                   <TableBody>
                     {drivers.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={7} className="text-center py-6 text-slate-500">
-                          ยังไม่มีข้อมูล พขร.
+                        <TableCell colSpan={8} className="text-center py-6 text-slate-500">
+                          ไม่พบข้อมูลพนักงานขับรถ
                         </TableCell>
                       </TableRow>
                     ) : (
                       drivers.map((d) => (
-                        <TableRow key={d.id}>
+                        <TableRow key={d.id} className="hover:bg-slate-50">
                           <TableCell className="font-semibold text-slate-900">{d.name}</TableCell>
-                          <TableCell>{d.phone || '-'}</TableCell>
-                          <TableCell>{d.license_number || '-'}</TableCell>
-                          <TableCell>{d.license_expiry_date || '-'}</TableCell>
-                          <TableCell>฿{Number(d.daily_rate).toLocaleString()}</TableCell>
-                          <TableCell>
-                            {d.status === 'available' ? (
-                              <Badge className="bg-emerald-600">พร้อมวิ่งงาน</Badge>
-                            ) : d.status === 'on_job' ? (
-                              <Badge className="bg-blue-600">กำลังวิ่งงาน</Badge>
-                            ) : (
-                              <Badge variant="outline">ลา / พักงาน</Badge>
-                            )}
+                          <TableCell className="text-xs text-slate-600">{d.phone || '-'}</TableCell>
+                          <TableCell className="text-xs font-mono text-slate-700">{d.id_number || '-'}</TableCell>
+                          <TableCell className="text-xs font-mono">{d.license_number || '-'}</TableCell>
+                          <TableCell className="text-xs font-mono">{d.license_expiry_date || '-'}</TableCell>
+                          <TableCell className="text-right font-medium text-slate-900">
+                            ฿{Number(d.daily_rate).toLocaleString()}
                           </TableCell>
-                          <TableCell className="text-right">
-                            <Button 
-                              variant="ghost" 
-                              size="icon" 
-                              onClick={() => handleDelete('drivers', d.id)}
-                              className="text-red-500 hover:text-red-700 hover:bg-red-50"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
+                          <TableCell>
+                            <Badge variant={d.status === 'available' ? 'default' : 'secondary'} className="text-[11px]">
+                              {d.status === 'available' ? 'พร้อมวิ่งงาน' : d.status === 'on_job' ? 'กำลังวิ่งงาน' : 'ลา'}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-right whitespace-nowrap">
+                            <div className="flex items-center justify-end gap-1">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => handleOpenEditDriver(d)}
+                                className="h-8 w-8 p-0 text-slate-600 hover:text-blue-600"
+                              >
+                                <Edit3 className="h-3.5 w-3.5" />
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => handleDelete('drivers', d.id, d.name)}
+                                className="h-8 w-8 p-0 text-slate-400 hover:text-rose-600"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
                           </TableCell>
                         </TableRow>
                       ))
@@ -494,54 +1016,81 @@ export default function MasterDataPage() {
         {/* ================= TAB 3: CUSTOMERS ================= */}
         <TabsContent value="customers">
           <Card>
-            <CardHeader className="flex flex-row items-center justify-between">
+            <CardHeader className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div>
-                <CardTitle className="text-lg">ลูกค้า (Customers)</CardTitle>
-                <CardDescription>รายชื่อบริษัทลูกค้า, เลขประจำตัวผู้เสียภาษี และข้อมูลติดต่อ</CardDescription>
+                <CardTitle className="text-lg">ลูกค้าผู้ว่าจ้าง (Customers)</CardTitle>
+                <CardDescription>
+                  ข้อมูลบริษัทสำหรับออกใบแจ้งหนี้ (Invoice), สาขา, เครดิตเทอม, เลขผู้เสียภาษี 13 หลัก, และ Shipper ประจำ
+                </CardDescription>
               </div>
-              <Button onClick={() => setOpenCustomerModal(true)} className="gap-2 bg-blue-600 hover:bg-blue-700">
-                <Plus className="h-4 w-4" /> เพิ่มลูกค้า
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" onClick={exportCustomersCsv} className="gap-1.5 text-xs">
+                  <Download className="h-3.5 w-3.5" /> Export CSV
+                </Button>
+                <Button onClick={handleOpenAddCustomer} className="gap-1.5 bg-blue-600 hover:bg-blue-700 text-xs">
+                  <Plus className="h-3.5 w-3.5" /> เพิ่มลูกค้า
+                </Button>
+              </div>
             </CardHeader>
             <CardContent>
               <div className="rounded-md border overflow-x-auto">
                 <Table>
                   <TableHeader>
-                    <TableRow>
-                      <TableHead>ชื่อบริษัท</TableHead>
-                      <TableHead>เลขผู้เสียภาษี</TableHead>
-                      <TableHead>ผู้ติดต่อ</TableHead>
-                      <TableHead>เบอร์โทร</TableHead>
-                      <TableHead>อีเมล</TableHead>
-                      <TableHead>ที่อยู่</TableHead>
+                    <TableRow className="bg-slate-50">
+                      <TableHead className="font-bold">ชื่อบริษัทลูกค้า</TableHead>
+                      <TableHead>สาขา</TableHead>
+                      <TableHead>เลขผู้เสียภาษี (13 หลัก)</TableHead>
+                      <TableHead>เครดิตเทอม</TableHead>
+                      <TableHead>ผู้ติดต่อ / โทรศัพท์</TableHead>
+                      <TableHead>Shipper ประจำ</TableHead>
+                      <TableHead>สินค้าประจำ</TableHead>
                       <TableHead className="text-right">จัดการ</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {customers.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={7} className="text-center py-6 text-slate-500">
-                          ยังไม่มีข้อมูลลูกค้า
+                        <TableCell colSpan={8} className="text-center py-6 text-slate-500">
+                          ไม่พบข้อมูลลูกค้า
                         </TableCell>
                       </TableRow>
                     ) : (
                       customers.map((c) => (
-                        <TableRow key={c.id}>
-                          <TableCell className="font-semibold text-slate-900">{c.company_name}</TableCell>
-                          <TableCell>{c.tax_id || '-'}</TableCell>
-                          <TableCell>{c.contact_name || '-'}</TableCell>
-                          <TableCell>{c.phone || '-'}</TableCell>
-                          <TableCell>{c.email || '-'}</TableCell>
-                          <TableCell className="max-w-xs truncate text-xs text-slate-500">{c.address || '-'}</TableCell>
-                          <TableCell className="text-right">
-                            <Button 
-                              variant="ghost" 
-                              size="icon" 
-                              onClick={() => handleDelete('customers', c.id)}
-                              className="text-red-500 hover:text-red-700 hover:bg-red-50"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
+                        <TableRow key={c.id} className="hover:bg-slate-50">
+                          <TableCell className="font-semibold text-slate-900">
+                            <div>{c.company_name}</div>
+                            <div className="text-[11px] text-slate-500 truncate max-w-xs">{c.address}</div>
+                          </TableCell>
+                          <TableCell className="text-xs text-slate-600">{c.branch || 'สำนักงานใหญ่'}</TableCell>
+                          <TableCell className="text-xs font-mono text-slate-800">{c.tax_id || '-'}</TableCell>
+                          <TableCell className="text-xs font-bold text-rose-600">
+                            {c.credit_term_days ? `${c.credit_term_days} วัน` : '30 วัน'}
+                          </TableCell>
+                          <TableCell className="text-xs text-slate-600">
+                            <div>{c.contact_name || '-'}</div>
+                            <div className="text-slate-400 text-[11px]">{c.phone || '-'}</div>
+                          </TableCell>
+                          <TableCell className="text-xs text-blue-900 font-medium">{c.shipper_name || '-'}</TableCell>
+                          <TableCell className="text-xs text-slate-600">{c.commodity_name || '-'}</TableCell>
+                          <TableCell className="text-right whitespace-nowrap">
+                            <div className="flex items-center justify-end gap-1">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => handleOpenEditCustomer(c)}
+                                className="h-8 w-8 p-0 text-slate-600 hover:text-blue-600"
+                              >
+                                <Edit3 className="h-3.5 w-3.5" />
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => handleDelete('customers', c.id, c.company_name)}
+                                className="h-8 w-8 p-0 text-slate-400 hover:text-rose-600"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
                           </TableCell>
                         </TableRow>
                       ))
@@ -556,54 +1105,88 @@ export default function MasterDataPage() {
         {/* ================= TAB 4: LOCATIONS ================= */}
         <TabsContent value="locations">
           <Card>
-            <CardHeader className="flex flex-row items-center justify-between">
+            <CardHeader className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div>
-                <CardTitle className="text-lg">สถานที่ (Locations)</CardTitle>
-                <CardDescription>ลานฝากตู้คอนเทนเนอร์, ท่าเรือรับ-ส่งตู้, และโรงงานลูกค้า</CardDescription>
+                <CardTitle className="text-lg">สถานที่ / ลานฝากตู้ / ท่าเรือ (Locations)</CardTitle>
+                <CardDescription>
+                  จุดรับตู้, จุดบรรจุสินค้า, จุดคืนตู้ (เช่น ท่าเรือคลองเตย PAT, ลานบึงทองคำ) พร้อมพิกัด GPS และจุดสังเกต
+                </CardDescription>
               </div>
-              <Button onClick={() => setOpenLocationModal(true)} className="gap-2 bg-blue-600 hover:bg-blue-700">
-                <Plus className="h-4 w-4" /> เพิ่มสถานที่
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" onClick={exportLocationsCsv} className="gap-1.5 text-xs">
+                  <Download className="h-3.5 w-3.5" /> Export CSV
+                </Button>
+                <Button onClick={handleOpenAddLocation} className="gap-1.5 bg-blue-600 hover:bg-blue-700 text-xs">
+                  <Plus className="h-3.5 w-3.5" /> เพิ่มสถานที่
+                </Button>
+              </div>
             </CardHeader>
             <CardContent>
               <div className="rounded-md border overflow-x-auto">
                 <Table>
                   <TableHeader>
-                    <TableRow>
-                      <TableHead>ชื่อสถานที่</TableHead>
-                      <TableHead>ประเภทสถานที่</TableHead>
+                    <TableRow className="bg-slate-50">
+                      <TableHead className="font-bold">ชื่อสถานที่</TableHead>
+                      <TableHead>ประเภท</TableHead>
                       <TableHead>จังหวัด</TableHead>
-                      <TableHead>รายละเอียดที่อยู่</TableHead>
+                      <TableHead>ผู้ประสานงาน / เบอร์โทร</TableHead>
+                      <TableHead>พิกัด GPS / แผนที่</TableHead>
+                      <TableHead>จุดสังเกตหน้างาน</TableHead>
                       <TableHead className="text-right">จัดการ</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {locations.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={5} className="text-center py-6 text-slate-500">
-                          ยังไม่มีข้อมูลสถานที่
+                        <TableCell colSpan={7} className="text-center py-6 text-slate-500">
+                          ไม่พบข้อมูลสถานที่
                         </TableCell>
                       </TableRow>
                     ) : (
-                      locations.map((loc) => (
-                        <TableRow key={loc.id}>
-                          <TableCell className="font-semibold text-slate-900">{loc.name}</TableCell>
+                      locations.map((l) => (
+                        <TableRow key={l.id} className="hover:bg-slate-50">
+                          <TableCell className="font-semibold text-slate-900">
+                            <div>{l.name}</div>
+                            <div className="text-[11px] text-slate-500 truncate max-w-xs">{l.address}</div>
+                          </TableCell>
                           <TableCell>
-                            <Badge variant="outline" className="font-normal">
-                              {locationTypeMap[loc.location_type] || loc.location_type}
+                            <Badge variant="outline" className="text-xs">
+                              {locationTypeMap[l.location_type] || l.location_type}
                             </Badge>
                           </TableCell>
-                          <TableCell>{loc.province || '-'}</TableCell>
-                          <TableCell className="text-xs text-slate-500">{loc.address || '-'}</TableCell>
-                          <TableCell className="text-right">
-                            <Button 
-                              variant="ghost" 
-                              size="icon" 
-                              onClick={() => handleDelete('locations', loc.id)}
-                              className="text-red-500 hover:text-red-700 hover:bg-red-50"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
+                          <TableCell className="text-xs text-slate-600">{l.province || '-'}</TableCell>
+                          <TableCell className="text-xs text-slate-600">
+                            <div>{l.contact_name || '-'}</div>
+                            <div className="text-slate-400 text-[11px]">{l.phone || '-'}</div>
+                          </TableCell>
+                          <TableCell className="text-xs font-mono text-blue-600">
+                            {l.location_map ? (
+                              <span className="flex items-center gap-1">
+                                <MapPin className="h-3 w-3" />
+                                {l.location_map}
+                              </span>
+                            ) : '-'}
+                          </TableCell>
+                          <TableCell className="text-xs text-slate-600">{l.location_remark || '-'}</TableCell>
+                          <TableCell className="text-right whitespace-nowrap">
+                            <div className="flex items-center justify-end gap-1">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => handleOpenEditLocation(l)}
+                                className="h-8 w-8 p-0 text-slate-600 hover:text-blue-600"
+                              >
+                                <Edit3 className="h-3.5 w-3.5" />
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => handleDelete('locations', l.id, l.name)}
+                                className="h-8 w-8 p-0 text-slate-400 hover:text-rose-600"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
                           </TableCell>
                         </TableRow>
                       ))
@@ -615,32 +1198,37 @@ export default function MasterDataPage() {
           </Card>
         </TabsContent>
 
-        {/* ================= TAB 5: RATE CARDS ================= */}
+        {/* ================= TAB 5: RATES ================= */}
         <TabsContent value="rates">
           <Card>
-            <CardHeader className="flex flex-row items-center justify-between">
+            <CardHeader className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div>
-                <CardTitle className="text-lg">ตารางเรทราคามาตรฐาน (Rate Cards)</CardTitle>
+                <CardTitle className="text-lg">เรทราคามาตรฐานแยกเส้นทาง (Rate Cards)</CardTitle>
                 <CardDescription>
-                  กำหนดราคาค่าบริการและต้นทุนประมาณการแยกตามเส้นทาง (ต้นทาง - ปลายทาง) และประเภทรถ
+                  ราคาค่าบริการเรียกเก็บ และต้นทุนประมาณการ (น้ำมัน, ทางด่วน, พขร.) สามารถระบุเฉพาะรายลูกค้าหรือเรทกลาง
                 </CardDescription>
               </div>
-              <Button onClick={() => setOpenRateCardModal(true)} className="gap-2 bg-blue-600 hover:bg-blue-700">
-                <Plus className="h-4 w-4" /> เพิ่มเรทราคา
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" onClick={exportRatesCsv} className="gap-1.5 text-xs">
+                  <Download className="h-3.5 w-3.5" /> Export CSV
+                </Button>
+                <Button onClick={handleOpenAddRateCard} className="gap-1.5 bg-blue-600 hover:bg-blue-700 text-xs">
+                  <Plus className="h-3.5 w-3.5" /> เพิ่มเรทราคา
+                </Button>
+              </div>
             </CardHeader>
             <CardContent>
               <div className="rounded-md border overflow-x-auto">
                 <Table>
                   <TableHeader>
-                    <TableRow>
-                      <TableHead>ต้นทาง</TableHead>
-                      <TableHead>ปลายทาง</TableHead>
-                      <TableHead>ประเภทรถ</TableHead>
-                      <TableHead>ราคาขายลูกค้า (บาท)</TableHead>
-                      <TableHead>ค่าน้ำมันประมาณการ</TableHead>
-                      <TableHead>ค่าทางด่วนประมาณการ</TableHead>
-                      <TableHead>ค่าแรง พขร. ประมาณการ</TableHead>
+                    <TableRow className="bg-slate-50">
+                      <TableHead className="font-bold">ลูกค้า</TableHead>
+                      <TableHead className="font-bold">คู่เส้นทาง (ต้นทาง ➔ ปลายทาง)</TableHead>
+                      <TableHead>สเปกตู้</TableHead>
+                      <TableHead>ชนิดรถ</TableHead>
+                      <TableHead className="text-right font-bold text-blue-900">ราคาขาย (บาท)</TableHead>
+                      <TableHead className="text-right">ต้นทุนประมาณการ</TableHead>
+                      <TableHead className="text-right font-bold text-emerald-800">กำไรสุทธิ</TableHead>
                       <TableHead className="text-right">จัดการ</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -648,33 +1236,62 @@ export default function MasterDataPage() {
                     {rateCards.length === 0 ? (
                       <TableRow>
                         <TableCell colSpan={8} className="text-center py-6 text-slate-500">
-                          ยังไม่มีข้อมูลเรทราคา
+                          ไม่พบข้อมูลเรทราคา
                         </TableCell>
                       </TableRow>
                     ) : (
-                      rateCards.map((r) => (
-                        <TableRow key={r.id}>
-                          <TableCell className="font-semibold">{r.origin?.name || '-'}</TableCell>
-                          <TableCell className="font-semibold">{r.destination?.name || '-'}</TableCell>
-                          <TableCell>{vehicleTypeMap[r.vehicle_type] || r.vehicle_type}</TableCell>
-                          <TableCell className="font-bold text-emerald-600">
-                            ฿{Number(r.base_price).toLocaleString()}
-                          </TableCell>
-                          <TableCell className="text-slate-600">฿{Number(r.fuel_cost_est).toLocaleString()}</TableCell>
-                          <TableCell className="text-slate-600">฿{Number(r.toll_fee_est).toLocaleString()}</TableCell>
-                          <TableCell className="text-slate-600">฿{Number(r.driver_fee_est).toLocaleString()}</TableCell>
-                          <TableCell className="text-right">
-                            <Button 
-                              variant="ghost" 
-                              size="icon" 
-                              onClick={() => handleDelete('rate_cards', r.id)}
-                              className="text-red-500 hover:text-red-700 hover:bg-red-50"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </TableCell>
-                        </TableRow>
-                      ))
+                      rateCards.map((r) => {
+                        const totalCost = Number(r.fuel_cost_est || 0) + Number(r.toll_fee_est || 0) + Number(r.driver_fee_est || 0);
+                        const profit = Number(r.base_price || 0) - totalCost;
+                        return (
+                          <TableRow key={r.id} className="hover:bg-slate-50">
+                            <TableCell className="text-xs font-semibold text-slate-800">
+                              {r.customer?.company_name || <span className="text-slate-400">เรททั่วไป (ทุกราย)</span>}
+                            </TableCell>
+                            <TableCell className="font-medium text-slate-900 text-xs">
+                              {r.origin?.name} <span className="text-blue-600 font-bold">➔</span> {r.destination?.name}
+                            </TableCell>
+                            <TableCell className="text-xs font-mono">
+                              {r.container_size ? `${r.container_size}' ${r.container_type || 'DC'}` : '40\' HC'}
+                            </TableCell>
+                            <TableCell className="text-xs text-slate-600">
+                              {vehicleTypeMap[r.vehicle_type] || r.vehicle_type}
+                            </TableCell>
+                            <TableCell className="text-right font-bold text-blue-700">
+                              ฿{Number(r.base_price).toLocaleString()}
+                            </TableCell>
+                            <TableCell className="text-right text-xs text-slate-600">
+                              <div>฿{totalCost.toLocaleString()}</div>
+                              <div className="text-[10px] text-slate-400">
+                                นม.{r.fuel_cost_est} | ด่วน{r.toll_fee_est} | พขร.{r.driver_fee_est}
+                              </div>
+                            </TableCell>
+                            <TableCell className="text-right font-bold text-emerald-700">
+                              ฿{profit.toLocaleString()}
+                            </TableCell>
+                            <TableCell className="text-right whitespace-nowrap">
+                              <div className="flex items-center justify-end gap-1">
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => handleOpenEditRateCard(r)}
+                                  className="h-8 w-8 p-0 text-slate-600 hover:text-blue-600"
+                                >
+                                  <Edit3 className="h-3.5 w-3.5" />
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => handleDelete('rate_cards', r.id, `เรท ฿${r.base_price}`)}
+                                  className="h-8 w-8 p-0 text-slate-400 hover:text-rose-600"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </Button>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })
                     )}
                   </TableBody>
                 </Table>
@@ -683,73 +1300,146 @@ export default function MasterDataPage() {
           </Card>
         </TabsContent>
 
-        {/* ================= TAB 6: JOB TYPES REFERENCE ================= */}
+        {/* ================= TAB 6: JOB TYPES ================= */}
         <TabsContent value="job-types">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg">ประเภทงานขนส่งตู้คอนเทนเนอร์ (Standard Job Types)</CardTitle>
-              <CardDescription>
-                มาตรฐาน 4 ประเภทงานหลักของ Connect Transport Co., Ltd. สำหรับเลือกในโมดูลรับงาน
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="grid md:grid-cols-2 gap-4">
-                <div className="p-4 border rounded-xl bg-blue-50/50 border-blue-200">
-                  <div className="font-bold text-blue-900 text-base">1. ลากตู้หนักไปเปิด (Heavy to Open)</div>
-                  <p className="text-sm text-slate-600 mt-1">
-                    รับตู้คอนเทนเนอร์ที่มีสินค้า (ตู้หนัก) จากท่าเรือหรือลานตู้ ไปส่งให้ลูกค้าที่โรงงานเพื่อเปิดถ่ายสินค้าออก (Inbound / นำเข้า)
-                  </p>
-                </div>
-                <div className="p-4 border rounded-xl bg-emerald-50/50 border-emerald-200">
-                  <div className="font-bold text-emerald-900 text-base">2. ลากตู้เปล่าไปบรรจุ (Empty to Stuff)</div>
-                  <p className="text-sm text-slate-600 mt-1">
-                    รับตู้คอนเทนเนอร์เปล่าจากลานตู้ ไปให้ลูกค้าบรรจุสินค้าที่โรงงาน แล้วลากตู้หนักกลับเข้าท่าเรือเพื่อส่งออก (Outbound / ส่งออก)
-                  </p>
-                </div>
-                <div className="p-4 border rounded-xl bg-amber-50/50 border-amber-200">
-                  <div className="font-bold text-amber-900 text-base">3. ลากตู้เปล่า (Empty Return)</div>
-                  <p className="text-sm text-slate-600 mt-1">
-                    ลากตู้เปล่าหลังจากเปิดสินค้าเสร็จแล้ว ส่งกลับไปคืนยังลานตู้ของสายการเดินเรือที่กำหนด
-                  </p>
-                </div>
-                <div className="p-4 border rounded-xl bg-purple-50/50 border-purple-200">
-                  <div className="font-bold text-purple-900 text-base">4. ย้ายลาน (Yard Move)</div>
-                  <p className="text-sm text-slate-600 mt-1">
-                    การขนย้ายตู้คอนเทนเนอร์ระหว่างลาน เช่น จากลานพักตู้ A ไปลานซ่อม B หรือย้ายภายในบริเวณท่าเรือ
-                  </p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+          <div className="grid md:grid-cols-2 gap-4">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base font-bold text-slate-900">1. ลากตู้หนักไปเปิด (Heavy to Open)</CardTitle>
+                <CardDescription>งานนำเข้าสินค้า (Import Work)</CardDescription>
+              </CardHeader>
+              <CardContent className="text-xs text-slate-600 space-y-2">
+                <p><strong>กระบวนการ:</strong> รับตู้หนักจากท่าเรือหรือลานตู้ ➔ ขนส่งไปยังโรงงานลูกค้าเพื่อเปิดตู้และนำสินค้าลง ➔ ลากตู้เปล่ากลับไปคืนลานตู้สายเรือ</p>
+                <p className="text-blue-600 font-semibold">* มีการออกจดหมายเปลี่ยนใบเสร็จท่าเรือ (PAT) กรณีรับจากท่าเรือคลองเตย</p>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base font-bold text-slate-900">2. ลากตู้เปล่าไปบรรจุ (Empty to Stuff)</CardTitle>
+                <CardDescription>งานส่งออกสินค้า (Export Work)</CardDescription>
+              </CardHeader>
+              <CardContent className="text-xs text-slate-600 space-y-2">
+                <p><strong>กระบวนการ:</strong> รับตู้เปล่าจากลานตู้สายเรือ ➔ ขนส่งไปยังโรงงานลูกค้าเพื่อบรรจุสินค้าและล็อคซีล (Seal) ➔ ขนส่งตู้หนักไปส่งที่ท่าเรือเพื่อรอขึ้นเรือ</p>
+                <p className="text-blue-600 font-semibold">* ต้องตรวจสภาพตู้ 5 มุม และถ่ายรูปหน้าตู้ที่ล็อคซีลอย่างเคร่งครัด</p>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base font-bold text-slate-900">3. ลากตู้เปล่าคืน (Empty Return)</CardTitle>
+                <CardDescription>ส่งคืนตู้เปล่าเข้าลานสายเรือ</CardDescription>
+              </CardHeader>
+              <CardContent className="text-xs text-slate-600 space-y-2">
+                <p><strong>กระบวนการ:</strong> รับตู้เปล่าที่เปิดสินค้าเสร็จแล้วจากโรงงาน ➔ ตรวจสอบสภาพความเสียหายและทำความสะอาด ➔ ส่งมอบคืนลานตู้สายเรือพร้อมรับใบ EIR</p>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base font-bold text-slate-900">4. ย้ายลาน (Yard Move)</CardTitle>
+                <CardDescription>การเคลื่อนย้ายภายในลานหรือระหว่างลานตู้</CardDescription>
+              </CardHeader>
+              <CardContent className="text-xs text-slate-600 space-y-2">
+                <p><strong>กระบวนการ:</strong> ขนย้ายตู้คอนเทนเนอร์ระหว่างลาน หรือย้ายจุดวางในท่าเรือเพื่อรอรอบการบรรจุ/ขนถ่าย</p>
+              </CardContent>
+            </Card>
+          </div>
         </TabsContent>
       </Tabs>
 
-      {/* ================= MODAL: ADD VEHICLE ================= */}
+      {/* ================= MODAL: VEHICLE (ADD / EDIT) ================= */}
       <Dialog open={openVehicleModal} onOpenChange={setOpenVehicleModal}>
-        <DialogContent className="sm:max-w-[480px]">
-          <form onSubmit={handleAddVehicle}>
-            <DialogHeader>
-              <DialogTitle>เพิ่มข้อมูลรถบรรทุกใหม่</DialogTitle>
-              <DialogDescription>กรอกข้อมูลทะเบียนและวันหมดอายุของเอกสารต่างๆ</DialogDescription>
-            </DialogHeader>
-            <div className="space-y-4 py-4">
-              <div className="space-y-1">
-                <Label htmlFor="plate">ทะเบียนรถ *</Label>
-                <Input 
-                  id="plate" 
-                  required 
-                  placeholder="เช่น 70-9999 กทม." 
+        <DialogContent className="sm:max-w-[650px] max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{editVehicleId ? 'แก้ไขข้อมูลรถบรรทุก' : 'เพิ่มรถบรรทุกใหม่'}</DialogTitle>
+            <DialogDescription>
+              กำหนดรหัสรถแบบย่อ และผูกคนขับประจำรถ เพื่อความสะดวกรวดเร็วในการจ่ายงาน
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleSaveVehicle} className="space-y-4">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs font-bold text-blue-900">รหัสรถย่อ (เช่น รถคัน-1) *</Label>
+                <Input
+                  required
+                  placeholder="เช่น รถคัน-1, รถคัน-2"
+                  value={vehicleForm.truck_name_id}
+                  onChange={(e) => setVehicleForm({ ...vehicleForm, truck_name_id: e.target.value })}
+                />
+              </div>
+              <div>
+                <Label className="text-xs font-bold">ป้ายทะเบียนรถ *</Label>
+                <Input
+                  required
+                  placeholder="เช่น 70-9821 กทม."
                   value={vehicleForm.plate_number}
                   onChange={(e) => setVehicleForm({ ...vehicleForm, plate_number: e.target.value })}
                 />
               </div>
-              <div className="space-y-1">
-                <Label htmlFor="vtype">ประเภทรถ</Label>
-                <select 
-                  id="vtype"
-                  className="w-full border rounded-md p-2 text-sm bg-white"
+            </div>
+
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <Label className="text-xs">ยี่ห้อรถ</Label>
+                <Input
+                  placeholder="Hino, Isuzu, Scania"
+                  value={vehicleForm.truck_brand}
+                  onChange={(e) => setVehicleForm({ ...vehicleForm, truck_brand: e.target.value })}
+                />
+              </div>
+              <div>
+                <Label className="text-xs">รุ่นรถ</Label>
+                <Input
+                  placeholder="S700, Giga"
+                  value={vehicleForm.truck_model}
+                  onChange={(e) => setVehicleForm({ ...vehicleForm, truck_model: e.target.value })}
+                />
+              </div>
+              <div>
+                <Label className="text-xs">ปีที่จดทะเบียน</Label>
+                <Input
+                  placeholder="2565"
+                  value={vehicleForm.register_year}
+                  onChange={(e) => setVehicleForm({ ...vehicleForm, register_year: e.target.value })}
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs font-bold text-emerald-900">คนขับประจำรถ (ผูกรถ-คนขับอัตโนมัติ)</Label>
+                <select
+                  className="w-full border rounded-md px-3 py-2 text-sm bg-white"
+                  value={vehicleForm.driver_id}
+                  onChange={(e) => setVehicleForm({ ...vehicleForm, driver_id: e.target.value })}
+                >
+                  <option value="">-- ยังไม่ผูกคนขับ --</option>
+                  {drivers.map(d => (
+                    <option key={d.id} value={d.id}>
+                      {d.name} {d.phone ? `(${d.phone})` : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <Label className="text-xs">ยี่ห้อ GPS</Label>
+                <Input
+                  placeholder="DTC, Hino Connect"
+                  value={vehicleForm.gps_brand}
+                  onChange={(e) => setVehicleForm({ ...vehicleForm, gps_brand: e.target.value })}
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">ชนิดรถ</Label>
+                <select
+                  className="w-full border rounded-md px-3 py-2 text-sm bg-white"
                   value={vehicleForm.vehicle_type}
-                  onChange={(e) => setVehicleForm({ ...vehicleForm, vehicle_type: e.target.value })}
+                  onChange={(e) => setVehicleForm({ ...vehicleForm, vehicle_type: e.target.value as VehicleType })}
                 >
                   <option value="trailer">รถเทรลเลอร์ (หัวลาก)</option>
                   <option value="semi_trailer">รถกึ่งพ่วง (Semi-Trailer)</option>
@@ -758,358 +1448,524 @@ export default function MasterDataPage() {
                   <option value="4_wheel">รถ 4 ล้อ</option>
                 </select>
               </div>
-              <div className="space-y-1">
-                <Label htmlFor="capacity">ความจุ/น้ำหนักบรรทุก (ตัน)</Label>
-                <Input 
-                  id="capacity" 
+              <div>
+                <Label className="text-xs">น้ำหนักบรรทุกสูงสุด (ตัน)</Label>
+                <Input
                   type="number"
-                  placeholder="32" 
                   value={vehicleForm.capacity_tons}
                   onChange={(e) => setVehicleForm({ ...vehicleForm, capacity_tons: e.target.value })}
                 />
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <Label htmlFor="iso">วันหมดอายุ ISO 39001</Label>
-                  <Input 
-                    id="iso" 
-                    type="date"
-                    value={vehicleForm.iso_expiry_date}
-                    onChange={(e) => setVehicleForm({ ...vehicleForm, iso_expiry_date: e.target.value })}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="ins">วันหมดอายุประกันภัย</Label>
-                  <Input 
-                    id="ins" 
-                    type="date"
-                    value={vehicleForm.insurance_expiry_date}
-                    onChange={(e) => setVehicleForm({ ...vehicleForm, insurance_expiry_date: e.target.value })}
-                  />
-                </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-3 border-t pt-3">
+              <div>
+                <Label className="text-xs">วันหมดอายุภาษีป้ายวงกลม</Label>
+                <Input
+                  type="date"
+                  value={vehicleForm.tax_expiry_date}
+                  onChange={(e) => setVehicleForm({ ...vehicleForm, tax_expiry_date: e.target.value })}
+                />
               </div>
-              <div className="space-y-1">
-                <Label htmlFor="act">วันหมดอายุ พรบ.</Label>
-                <Input 
-                  id="act" 
+              <div>
+                <Label className="text-xs">วันหมดอายุ พรบ.</Label>
+                <Input
                   type="date"
                   value={vehicleForm.act_expiry_date}
                   onChange={(e) => setVehicleForm({ ...vehicleForm, act_expiry_date: e.target.value })}
                 />
               </div>
+              <div>
+                <Label className="text-xs">วันหมดอายุประกันภัย</Label>
+                <Input
+                  type="date"
+                  value={vehicleForm.insurance_expiry_date}
+                  onChange={(e) => setVehicleForm({ ...vehicleForm, insurance_expiry_date: e.target.value })}
+                />
+              </div>
             </div>
+
+            <div>
+              <Label className="text-xs">สถานะรถ</Label>
+              <select
+                className="w-full border rounded-md px-3 py-2 text-sm bg-white"
+                value={vehicleForm.status}
+                onChange={(e) => setVehicleForm({ ...vehicleForm, status: e.target.value as any })}
+              >
+                <option value="active">พร้อมใช้งาน (Active)</option>
+                <option value="maintenance">เข้าซ่อม (Maintenance)</option>
+                <option value="inactive">ปิดการใช้งาน (Inactive)</option>
+              </select>
+            </div>
+
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setOpenVehicleModal(false)}>ยกเลิก</Button>
-              <Button type="submit" className="bg-blue-600 hover:bg-blue-700">บันทึกข้อมูล</Button>
+              <Button type="button" variant="outline" onClick={() => setOpenVehicleModal(false)}>
+                ยกเลิก
+              </Button>
+              <Button type="submit" className="bg-blue-600 hover:bg-blue-700">
+                {editVehicleId ? 'บันทึกการแก้ไข' : 'บันทึกข้อมูลรถ'}
+              </Button>
             </DialogFooter>
           </form>
         </DialogContent>
       </Dialog>
 
-      {/* ================= MODAL: ADD DRIVER ================= */}
+      {/* ================= MODAL: DRIVER (ADD / EDIT) ================= */}
       <Dialog open={openDriverModal} onOpenChange={setOpenDriverModal}>
-        <DialogContent className="sm:max-w-[480px]">
-          <form onSubmit={handleAddDriver}>
-            <DialogHeader>
-              <DialogTitle>เพิ่มข้อมูลพนักงานขับรถ (พขร.)</DialogTitle>
-              <DialogDescription>กรอกข้อมูลชื่อ, ใบอนุญาตขับขี่ และเบี้ยเลี้ยงต่อวัน</DialogDescription>
-            </DialogHeader>
-            <div className="space-y-4 py-4">
-              <div className="space-y-1">
-                <Label htmlFor="dname">ชื่อ - นามสกุล *</Label>
-                <Input 
-                  id="dname" 
-                  required 
-                  placeholder="เช่น สมหมาย ใจมั่น" 
+        <DialogContent className="sm:max-w-[550px]">
+          <DialogHeader>
+            <DialogTitle>{editDriverId ? 'แก้ไขข้อมูล พขร.' : 'เพิ่มพนักงานขับรถ (พขร.)'}</DialogTitle>
+            <DialogDescription>
+              บันทึกข้อมูลส่วนตัว เลขบัตรประชาชน และใบอนุญาตขับขี่ ท.4
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleSaveDriver} className="space-y-4">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs font-bold">ชื่อ - นามสกุล *</Label>
+                <Input
+                  required
+                  placeholder="เช่น นายสมชาย ใจดี"
                   value={driverForm.name}
                   onChange={(e) => setDriverForm({ ...driverForm, name: e.target.value })}
                 />
               </div>
-              <div className="space-y-1">
-                <Label htmlFor="dphone">เบอร์โทรศัพท์</Label>
-                <Input 
-                  id="dphone" 
-                  placeholder="081-xxx-xxxx" 
+              <div>
+                <Label className="text-xs font-bold">เบอร์โทรศัพท์ *</Label>
+                <Input
+                  required
+                  placeholder="เช่น 081-234-5678"
                   value={driverForm.phone}
                   onChange={(e) => setDriverForm({ ...driverForm, phone: e.target.value })}
                 />
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <Label htmlFor="license">เลขที่ใบขับขี่</Label>
-                  <Input 
-                    id="license" 
-                    placeholder="ท.4-xxxxxxx" 
-                    value={driverForm.license_number}
-                    onChange={(e) => setDriverForm({ ...driverForm, license_number: e.target.value })}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="lexp">วันหมดอายุใบขับขี่</Label>
-                  <Input 
-                    id="lexp" 
-                    type="date"
-                    value={driverForm.license_expiry_date}
-                    onChange={(e) => setDriverForm({ ...driverForm, license_expiry_date: e.target.value })}
-                  />
-                </div>
+            </div>
+
+            <div>
+              <Label className="text-xs font-bold">เลขประจำตัวประชาชน (13 หลัก)</Label>
+              <Input
+                placeholder="เช่น 1100200345678"
+                maxLength={17}
+                value={driverForm.id_number}
+                onChange={(e) => setDriverForm({ ...driverForm, id_number: e.target.value })}
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">เลขที่ใบขับขี่ (ท.4)</Label>
+                <Input
+                  placeholder="เช่น ท.4-0012984"
+                  value={driverForm.license_number}
+                  onChange={(e) => setDriverForm({ ...driverForm, license_number: e.target.value })}
+                />
               </div>
-              <div className="space-y-1">
-                <Label htmlFor="rate">เบี้ยเลี้ยงพื้นฐาน (บาท/วัน)</Label>
-                <Input 
-                  id="rate" 
+              <div>
+                <Label className="text-xs">วันหมดอายุใบขับขี่</Label>
+                <Input
+                  type="date"
+                  value={driverForm.license_expiry_date}
+                  onChange={(e) => setDriverForm({ ...driverForm, license_expiry_date: e.target.value })}
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">เบี้ยเลี้ยงมาตรฐานต่อวัน (บาท)</Label>
+                <Input
                   type="number"
-                  placeholder="600" 
                   value={driverForm.daily_rate}
                   onChange={(e) => setDriverForm({ ...driverForm, daily_rate: e.target.value })}
                 />
               </div>
+              <div>
+                <Label className="text-xs">สถานะ พขร.</Label>
+                <select
+                  className="w-full border rounded-md px-3 py-2 text-sm bg-white"
+                  value={driverForm.status}
+                  onChange={(e) => setDriverForm({ ...driverForm, status: e.target.value as any })}
+                >
+                  <option value="available">พร้อมวิ่งงาน (Available)</option>
+                  <option value="on_job">กำลังวิ่งงาน (On Job)</option>
+                  <option value="leave">ลาพักร้อน/ป่วย (Leave)</option>
+                </select>
+              </div>
             </div>
+
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setOpenDriverModal(false)}>ยกเลิก</Button>
-              <Button type="submit" className="bg-blue-600 hover:bg-blue-700">บันทึกข้อมูล</Button>
+              <Button type="button" variant="outline" onClick={() => setOpenDriverModal(false)}>
+                ยกเลิก
+              </Button>
+              <Button type="submit" className="bg-blue-600 hover:bg-blue-700">
+                {editDriverId ? 'บันทึกการแก้ไข' : 'บันทึกข้อมูล พขร.'}
+              </Button>
             </DialogFooter>
           </form>
         </DialogContent>
       </Dialog>
 
-      {/* ================= MODAL: ADD CUSTOMER ================= */}
+      {/* ================= MODAL: CUSTOMER (ADD / EDIT) ================= */}
       <Dialog open={openCustomerModal} onOpenChange={setOpenCustomerModal}>
-        <DialogContent className="sm:max-w-[480px]">
-          <form onSubmit={handleAddCustomer}>
-            <DialogHeader>
-              <DialogTitle>เพิ่มลูกค้าใหม่</DialogTitle>
-              <DialogDescription>บันทึกชื่อบริษัทและข้อมูลติดต่อลูกค้า</DialogDescription>
-            </DialogHeader>
-            <div className="space-y-4 py-4">
-              <div className="space-y-1">
-                <Label htmlFor="cname">ชื่อบริษัท *</Label>
-                <Input 
-                  id="cname" 
-                  required 
-                  placeholder="บริษัท ... จำกัด" 
+        <DialogContent className="sm:max-w-[650px] max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{editCustomerId ? 'แก้ไขข้อมูลลูกค้า' : 'เพิ่มลูกค้าใหม่'}</DialogTitle>
+            <DialogDescription>
+              ข้อมูลบริษัทสำหรับออกใบแจ้งหนี้ (Invoice) และหนังสือขอใบกำกับภาษีการท่าเรือฯ
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleSaveCustomer} className="space-y-4">
+            <div className="grid grid-cols-3 gap-3">
+              <div className="col-span-2">
+                <Label className="text-xs font-bold">ชื่อบริษัทลูกค้า *</Label>
+                <Input
+                  required
+                  placeholder="เช่น บริษัท ปทุม ทรานสปอร์ต จำกัด"
                   value={customerForm.company_name}
                   onChange={(e) => setCustomerForm({ ...customerForm, company_name: e.target.value })}
                 />
               </div>
-              <div className="space-y-1">
-                <Label htmlFor="tax">เลขประจำตัวผู้เสียภาษี (13 หลัก)</Label>
-                <Input 
-                  id="tax" 
-                  placeholder="010555xxxxxxx" 
+              <div>
+                <Label className="text-xs font-bold">สาขา</Label>
+                <Input
+                  placeholder="สำนักงานใหญ่ หรือ สาขาที่ 00001"
+                  value={customerForm.branch}
+                  onChange={(e) => setCustomerForm({ ...customerForm, branch: e.target.value })}
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs font-bold">เลขประจำตัวผู้เสียภาษี (13 หลัก) *</Label>
+                <Input
+                  required
+                  placeholder="เช่น 0135563000175"
                   value={customerForm.tax_id}
                   onChange={(e) => setCustomerForm({ ...customerForm, tax_id: e.target.value })}
                 />
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <Label htmlFor="contact">ชื่อผู้ติดต่อ</Label>
-                  <Input 
-                    id="contact" 
-                    placeholder="คุณ..." 
-                    value={customerForm.contact_name}
-                    onChange={(e) => setCustomerForm({ ...customerForm, contact_name: e.target.value })}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="cphone">เบอร์โทร</Label>
-                  <Input 
-                    id="cphone" 
-                    placeholder="02-xxx-xxxx" 
-                    value={customerForm.phone}
-                    onChange={(e) => setCustomerForm({ ...customerForm, phone: e.target.value })}
-                  />
-                </div>
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="cemail">อีเมล</Label>
-                <Input 
-                  id="cemail" 
-                  type="email"
-                  placeholder="contact@company.com" 
-                  value={customerForm.email}
-                  onChange={(e) => setCustomerForm({ ...customerForm, email: e.target.value })}
-                />
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="caddr">ที่อยู่บริษัท</Label>
-                <Input 
-                  id="caddr" 
-                  placeholder="ที่อยู่สำหรับออกเอกสารใบกำกับภาษี" 
-                  value={customerForm.address}
-                  onChange={(e) => setCustomerForm({ ...customerForm, address: e.target.value })}
+              <div>
+                <Label className="text-xs font-bold text-rose-600">เครดิตเทอม (วัน)</Label>
+                <Input
+                  type="number"
+                  placeholder="30"
+                  value={customerForm.credit_term_days}
+                  onChange={(e) => setCustomerForm({ ...customerForm, credit_term_days: e.target.value })}
                 />
               </div>
             </div>
+
+            <div>
+              <Label className="text-xs font-bold">ที่อยู่ตาม ภ.พ.20 (สำหรับออกใบแจ้งหนี้) *</Label>
+              <textarea
+                required
+                rows={2}
+                className="w-full border rounded-md px-3 py-2 text-sm bg-white"
+                placeholder="ที่อยู่ตามหนังสือรับรองภาษี..."
+                value={customerForm.address}
+                onChange={(e) => setCustomerForm({ ...customerForm, address: e.target.value })}
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">ผู้ประสานงาน / ฝ่ายจัดส่ง</Label>
+                <Input
+                  placeholder="คุณมานพ"
+                  value={customerForm.contact_name}
+                  onChange={(e) => setCustomerForm({ ...customerForm, contact_name: e.target.value })}
+                />
+              </div>
+              <div>
+                <Label className="text-xs">เบอร์โทรศัพท์</Label>
+                <Input
+                  placeholder="02-998-1122"
+                  value={customerForm.phone}
+                  onChange={(e) => setCustomerForm({ ...customerForm, phone: e.target.value })}
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs font-bold text-blue-900">ชื่อ Shipper ประจำบน B/L</Label>
+                <Input
+                  placeholder="ELECTRICAL COMPONENTS CO.,LTD."
+                  value={customerForm.shipper_name}
+                  onChange={(e) => setCustomerForm({ ...customerForm, shipper_name: e.target.value })}
+                />
+              </div>
+              <div>
+                <Label className="text-xs">ชื่อสินค้าประจำ</Label>
+                <Input
+                  placeholder="ชิ้นส่วนอิเล็กทรอนิกส์"
+                  value={customerForm.commodity_name}
+                  onChange={(e) => setCustomerForm({ ...customerForm, commodity_name: e.target.value })}
+                />
+              </div>
+            </div>
+
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setOpenCustomerModal(false)}>ยกเลิก</Button>
-              <Button type="submit" className="bg-blue-600 hover:bg-blue-700">บันทึกข้อมูล</Button>
+              <Button type="button" variant="outline" onClick={() => setOpenCustomerModal(false)}>
+                ยกเลิก
+              </Button>
+              <Button type="submit" className="bg-blue-600 hover:bg-blue-700">
+                {editCustomerId ? 'บันทึกการแก้ไข' : 'บันทึกข้อมูลลูกค้า'}
+              </Button>
             </DialogFooter>
           </form>
         </DialogContent>
       </Dialog>
 
-      {/* ================= MODAL: ADD LOCATION ================= */}
+      {/* ================= MODAL: LOCATION (ADD / EDIT) ================= */}
       <Dialog open={openLocationModal} onOpenChange={setOpenLocationModal}>
-        <DialogContent className="sm:max-w-[480px]">
-          <form onSubmit={handleAddLocation}>
-            <DialogHeader>
-              <DialogTitle>เพิ่มสถานที่ใหม่</DialogTitle>
-              <DialogDescription>บันทึกชื่อลานตู้, ท่าเรือ หรือโรงงาน</DialogDescription>
-            </DialogHeader>
-            <div className="space-y-4 py-4">
-              <div className="space-y-1">
-                <Label htmlFor="lname">ชื่อสถานที่ *</Label>
-                <Input 
-                  id="lname" 
-                  required 
-                  placeholder="เช่น ท่าเรือแหลมฉบัง C0, ลานตู้ บึงทองคำ" 
+        <DialogContent className="sm:max-w-[600px]">
+          <DialogHeader>
+            <DialogTitle>{editLocationId ? 'แก้ไขสถานที่' : 'เพิ่มสถานที่ใหม่'}</DialogTitle>
+            <DialogDescription>
+              ลานฝากตู้, ท่าเรือ (PAT / แหลมฉบัง), โรงงานลูกค้า พร้อมพิกัด GPS
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleSaveLocation} className="space-y-4">
+            <div className="grid grid-cols-3 gap-3">
+              <div className="col-span-2">
+                <Label className="text-xs font-bold">ชื่อสถานที่ *</Label>
+                <Input
+                  required
+                  placeholder="เช่น ท่าเรือคลองเตย (PAT), ลานตู้บึงทองคำ"
                   value={locationForm.name}
                   onChange={(e) => setLocationForm({ ...locationForm, name: e.target.value })}
                 />
               </div>
-              <div className="space-y-1">
-                <Label htmlFor="ltype">ประเภทสถานที่</Label>
-                <select 
-                  id="ltype"
-                  className="w-full border rounded-md p-2 text-sm bg-white"
+              <div>
+                <Label className="text-xs font-bold">ประเภท</Label>
+                <select
+                  className="w-full border rounded-md px-3 py-2 text-sm bg-white"
                   value={locationForm.location_type}
-                  onChange={(e) => setLocationForm({ ...locationForm, location_type: e.target.value as any })}
+                  onChange={(e) => setLocationForm({ ...locationForm, location_type: e.target.value as LocationType })}
                 >
-                  <option value="depot">ลานฝากตู้ (Depot)</option>
+                  <option value="depot">ลานตู้ (Depot)</option>
                   <option value="port">ท่าเรือ (Port)</option>
                   <option value="factory">โรงงาน (Factory)</option>
-                  <option value="yard">ลานจอด/ลานซ่อม (Yard)</option>
+                  <option value="yard">ลานจอด (Yard)</option>
                   <option value="other">อื่นๆ</option>
                 </select>
               </div>
-              <div className="space-y-1">
-                <Label htmlFor="lprov">จังหวัด</Label>
-                <Input 
-                  id="lprov" 
-                  placeholder="เช่น ชลบุรี, กรุงเทพฯ, อยุธยา" 
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">จังหวัด</Label>
+                <Input
+                  placeholder="กรุงเทพฯ, ชลบุรี"
                   value={locationForm.province}
                   onChange={(e) => setLocationForm({ ...locationForm, province: e.target.value })}
                 />
               </div>
-              <div className="space-y-1">
-                <Label htmlFor="laddr">รายละเอียดที่อยู่</Label>
-                <Input 
-                  id="laddr" 
-                  placeholder="ที่อยู่หรือจุดสังเกต" 
-                  value={locationForm.address}
-                  onChange={(e) => setLocationForm({ ...locationForm, address: e.target.value })}
+              <div>
+                <Label className="text-xs font-bold text-blue-800">พิกัด GPS / แผนที่</Label>
+                <Input
+                  placeholder="เช่น 13.7082, 100.5786 หรือ Maps link"
+                  value={locationForm.location_map}
+                  onChange={(e) => setLocationForm({ ...locationForm, location_map: e.target.value })}
                 />
               </div>
             </div>
+
+            <div>
+              <Label className="text-xs">ที่อยู่สถานที่</Label>
+              <textarea
+                rows={2}
+                className="w-full border rounded-md px-3 py-2 text-sm bg-white"
+                placeholder="เลขที่ ถนน ซอย..."
+                value={locationForm.address}
+                onChange={(e) => setLocationForm({ ...locationForm, address: e.target.value })}
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">ผู้ประสานงาน / ฝ่ายจัดส่ง</Label>
+                <Input
+                  placeholder="คุณสมบัติ"
+                  value={locationForm.contact_name}
+                  onChange={(e) => setLocationForm({ ...locationForm, contact_name: e.target.value })}
+                />
+              </div>
+              <div>
+                <Label className="text-xs">เบอร์โทรศัพท์</Label>
+                <Input
+                  placeholder="02-269-3000"
+                  value={locationForm.phone}
+                  onChange={(e) => setLocationForm({ ...locationForm, phone: e.target.value })}
+                />
+              </div>
+            </div>
+
+            <div>
+              <Label className="text-xs">จุดสังเกตหน้างาน / เวลาเปิด-ปิด Gate</Label>
+              <Input
+                placeholder="เข้าประตู 3 ตรวจ EIR, ปิดรับตู้ 22:00 น."
+                value={locationForm.location_remark}
+                onChange={(e) => setLocationForm({ ...locationForm, location_remark: e.target.value })}
+              />
+            </div>
+
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setOpenLocationModal(false)}>ยกเลิก</Button>
-              <Button type="submit" className="bg-blue-600 hover:bg-blue-700">บันทึกข้อมูล</Button>
+              <Button type="button" variant="outline" onClick={() => setOpenLocationModal(false)}>
+                ยกเลิก
+              </Button>
+              <Button type="submit" className="bg-blue-600 hover:bg-blue-700">
+                {editLocationId ? 'บันทึกการแก้ไข' : 'บันทึกสถานที่'}
+              </Button>
             </DialogFooter>
           </form>
         </DialogContent>
       </Dialog>
 
-      {/* ================= MODAL: ADD RATE CARD ================= */}
+      {/* ================= MODAL: RATE CARD (ADD / EDIT) ================= */}
       <Dialog open={openRateCardModal} onOpenChange={setOpenRateCardModal}>
-        <DialogContent className="sm:max-w-[480px]">
-          <form onSubmit={handleAddRateCard}>
-            <DialogHeader>
-              <DialogTitle>เพิ่มเรทราคามาตรฐาน</DialogTitle>
-              <DialogDescription>กำหนดราคาและต้นทุนประมาณการแยกตามเส้นทาง</DialogDescription>
-            </DialogHeader>
-            <div className="space-y-4 py-4">
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <Label htmlFor="orig">ต้นทาง *</Label>
-                  <select 
-                    id="orig"
-                    required
-                    className="w-full border rounded-md p-2 text-sm bg-white"
-                    value={rateCardForm.origin_id}
-                    onChange={(e) => setRateCardForm({ ...rateCardForm, origin_id: e.target.value })}
-                  >
-                    <option value="">-- เลือกต้นทาง --</option>
-                    {locations.map((l) => (
-                      <option key={l.id} value={l.id}>{l.name}</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="dest">ปลายทาง *</Label>
-                  <select 
-                    id="dest"
-                    required
-                    className="w-full border rounded-md p-2 text-sm bg-white"
-                    value={rateCardForm.destination_id}
-                    onChange={(e) => setRateCardForm({ ...rateCardForm, destination_id: e.target.value })}
-                  >
-                    <option value="">-- เลือกปลายทาง --</option>
-                    {locations.map((l) => (
-                      <option key={l.id} value={l.id}>{l.name}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="rvtype">ประเภทรถ</Label>
-                <select 
-                  id="rvtype"
-                  className="w-full border rounded-md p-2 text-sm bg-white"
-                  value={rateCardForm.vehicle_type}
-                  onChange={(e) => setRateCardForm({ ...rateCardForm, vehicle_type: e.target.value as any })}
+        <DialogContent className="sm:max-w-[650px]">
+          <DialogHeader>
+            <DialogTitle>{editRateCardId ? 'แก้ไขเรทราคา' : 'เพิ่มเรทราคามาตรฐาน'}</DialogTitle>
+            <DialogDescription>
+              กำหนดราคาขาย และต้นทุนประมาณการประจำคู่เส้นทางและขนาดตู้
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleSaveRateCard} className="space-y-4">
+            <div>
+              <Label className="text-xs font-bold">ลูกค้าเฉพาะราย (ถ้ามี)</Label>
+              <select
+                className="w-full border rounded-md px-3 py-2 text-sm bg-white"
+                value={rateCardForm.customer_id}
+                onChange={(e) => setRateCardForm({ ...rateCardForm, customer_id: e.target.value })}
+              >
+                <option value="">-- เรททั่วไป (ใช้ได้กับทุกลูกค้า) --</option>
+                {customers.map(c => (
+                  <option key={c.id} value={c.id}>{c.company_name}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs font-bold">ต้นทาง (Origin) *</Label>
+                <select
+                  required
+                  className="w-full border rounded-md px-3 py-2 text-sm bg-white"
+                  value={rateCardForm.origin_id}
+                  onChange={(e) => setRateCardForm({ ...rateCardForm, origin_id: e.target.value })}
                 >
-                  <option value="trailer">รถเทรลเลอร์ (หัวลาก)</option>
-                  <option value="semi_trailer">รถกึ่งพ่วง (Semi-Trailer)</option>
-                  <option value="10_wheel">รถ 10 ล้อ</option>
-                  <option value="6_wheel">รถ 6 ล้อ</option>
-                  <option value="4_wheel">รถ 4 ล้อ</option>
+                  <option value="">-- เลือกต้นทาง --</option>
+                  {locations.map(l => (
+                    <option key={l.id} value={l.id}>{l.name} ({l.province})</option>
+                  ))}
                 </select>
               </div>
-              <div className="space-y-1">
-                <Label htmlFor="bprice">ราคาขายเรียกเก็บลูกค้า (บาท) *</Label>
-                <Input 
-                  id="bprice" 
-                  type="number"
+
+              <div>
+                <Label className="text-xs font-bold">ปลายทาง (Destination) *</Label>
+                <select
                   required
-                  placeholder="5500" 
-                  value={rateCardForm.base_price}
-                  onChange={(e) => setRateCardForm({ ...rateCardForm, base_price: e.target.value })}
-                />
-              </div>
-              <div className="grid grid-cols-3 gap-2">
-                <div className="space-y-1">
-                  <Label htmlFor="rfuel" className="text-xs">ค่าน้ำมัน (ประมาณ)</Label>
-                  <Input 
-                    id="rfuel" 
-                    type="number"
-                    value={rateCardForm.fuel_cost_est}
-                    onChange={(e) => setRateCardForm({ ...rateCardForm, fuel_cost_est: e.target.value })}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="rtoll" className="text-xs">ค่าทางด่วน (ประมาณ)</Label>
-                  <Input 
-                    id="rtoll" 
-                    type="number"
-                    value={rateCardForm.toll_fee_est}
-                    onChange={(e) => setRateCardForm({ ...rateCardForm, toll_fee_est: e.target.value })}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="rdriver" className="text-xs">ค่าแรง พขร. (ประมาณ)</Label>
-                  <Input 
-                    id="rdriver" 
-                    type="number"
-                    value={rateCardForm.driver_fee_est}
-                    onChange={(e) => setRateCardForm({ ...rateCardForm, driver_fee_est: e.target.value })}
-                  />
-                </div>
+                  className="w-full border rounded-md px-3 py-2 text-sm bg-white"
+                  value={rateCardForm.destination_id}
+                  onChange={(e) => setRateCardForm({ ...rateCardForm, destination_id: e.target.value })}
+                >
+                  <option value="">-- เลือกปลายทาง --</option>
+                  {locations.map(l => (
+                    <option key={l.id} value={l.id}>{l.name} ({l.province})</option>
+                  ))}
+                </select>
               </div>
             </div>
+
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <Label className="text-xs">ขนาดตู้</Label>
+                <select
+                  className="w-full border rounded-md px-3 py-2 text-sm bg-white"
+                  value={rateCardForm.container_size}
+                  onChange={(e) => setRateCardForm({ ...rateCardForm, container_size: e.target.value as ContainerSize })}
+                >
+                  <option value="20">20 ฟุต</option>
+                  <option value="40">40 ฟุต</option>
+                  <option value="45">45 ฟุต</option>
+                </select>
+              </div>
+
+              <div>
+                <Label className="text-xs">ชนิดตู้</Label>
+                <select
+                  className="w-full border rounded-md px-3 py-2 text-sm bg-white"
+                  value={rateCardForm.container_type}
+                  onChange={(e) => setRateCardForm({ ...rateCardForm, container_type: e.target.value as ContainerType })}
+                >
+                  <option value="DC">DC (ตู้แห้งมาตรฐาน)</option>
+                  <option value="HC">HC (ตู้ทรงสูง)</option>
+                  <option value="OT">OT (เปิดหลังคา)</option>
+                  <option value="RH">RH (ตู้แช่เย็น Reefer)</option>
+                </select>
+              </div>
+
+              <div>
+                <Label className="text-xs">ประเภทรถ</Label>
+                <select
+                  className="w-full border rounded-md px-3 py-2 text-sm bg-white"
+                  value={rateCardForm.vehicle_type}
+                  onChange={(e) => setRateCardForm({ ...rateCardForm, vehicle_type: e.target.value as VehicleType })}
+                >
+                  <option value="trailer">รถเทรลเลอร์ (หัวลาก)</option>
+                  <option value="semi_trailer">รถกึ่งพ่วง</option>
+                  <option value="10_wheel">รถ 10 ล้อ</option>
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <Label className="text-xs font-bold text-blue-900">ราคาค่าบริการเรียกเก็บลูกค้า (บาท) *</Label>
+              <Input
+                required
+                type="number"
+                value={rateCardForm.base_price}
+                onChange={(e) => setRateCardForm({ ...rateCardForm, base_price: e.target.value })}
+              />
+            </div>
+
+            <div className="grid grid-cols-3 gap-3 border-t pt-3">
+              <div>
+                <Label className="text-xs">ค่าน้ำมันประมาณการ</Label>
+                <Input
+                  type="number"
+                  value={rateCardForm.fuel_cost_est}
+                  onChange={(e) => setRateCardForm({ ...rateCardForm, fuel_cost_est: e.target.value })}
+                />
+              </div>
+              <div>
+                <Label className="text-xs">ค่าทางด่วนประมาณการ</Label>
+                <Input
+                  type="number"
+                  value={rateCardForm.toll_fee_est}
+                  onChange={(e) => setRateCardForm({ ...rateCardForm, toll_fee_est: e.target.value })}
+                />
+              </div>
+              <div>
+                <Label className="text-xs">ค่าแรง/เบี้ยเลี้ยง พขร.</Label>
+                <Input
+                  type="number"
+                  value={rateCardForm.driver_fee_est}
+                  onChange={(e) => setRateCardForm({ ...rateCardForm, driver_fee_est: e.target.value })}
+                />
+              </div>
+            </div>
+
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setOpenRateCardModal(false)}>ยกเลิก</Button>
-              <Button type="submit" className="bg-blue-600 hover:bg-blue-700">บันทึกเรทราคา</Button>
+              <Button type="button" variant="outline" onClick={() => setOpenRateCardModal(false)}>
+                ยกเลิก
+              </Button>
+              <Button type="submit" className="bg-blue-600 hover:bg-blue-700">
+                {editRateCardId ? 'บันทึกการแก้ไข' : 'บันทึกเรทราคา'}
+              </Button>
             </DialogFooter>
           </form>
         </DialogContent>

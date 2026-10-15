@@ -3,6 +3,8 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
 import { Job, Customer } from '@/types/database';
+import { logActivity } from '@/lib/audit-logger';
+import { useAuth } from '@/lib/auth-context';
 import { 
   ReceiptText, 
   FileText, 
@@ -17,13 +19,21 @@ import {
   FileCheck2,
   TrendingUp,
   Percent,
-  Download
+  Download,
+  Edit3,
+  Plus,
+  Trash2,
+  Calculator,
+  Save,
+  Check
 } from 'lucide-react';
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import {
   Table,
   TableBody,
@@ -48,7 +58,41 @@ const patStatusMap: Record<string, { label: string; badgeClass: string }> = {
   completed: { label: 'เปลี่ยนใบเสร็จสำเร็จ', badgeClass: 'bg-emerald-100 text-emerald-800 border-emerald-200' },
 };
 
+// Safe math formula evaluator (e.g. "=2*220+2*600" -> 1640)
+function evaluateMathFormula(input: string): number {
+  if (!input) return 0;
+  const expr = input.replace(/^=/, '').trim();
+  if (!expr) return 0;
+  // Only allow valid mathematical characters
+  if (!/^[0-9+\-*/. ()]+$/.test(expr)) {
+    return parseFloat(expr) || 0;
+  }
+  try {
+    const result = Function(`'use strict'; return (${expr})`)();
+    return isNaN(result) ? 0 : Number(result);
+  } catch {
+    return parseFloat(expr) || 0;
+  }
+}
+
+// Convert western year to Thai Buddhist year (e.g. 2026 -> 2569)
+function toThaiDateString(dateObj: Date): string {
+  const d = String(dateObj.getDate()).padStart(2, '0');
+  const m = String(dateObj.getMonth() + 1).padStart(2, '0');
+  const y = dateObj.getFullYear() + 543;
+  return `${d}/${m}/${y}`;
+}
+
+interface ExtraChargeItem {
+  id: string;
+  description: string;
+  formula: string; // e.g. "=2*220+2*600"
+  amount: number;
+  category: 'advance' | 'transport';
+}
+
 export default function InvoicingPage() {
+  const { currentUser, currentRole } = useAuth();
   const [activeTab, setActiveTab] = useState('invoices');
   const [jobs, setJobs] = useState<Job[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -58,7 +102,28 @@ export default function InvoicingPage() {
   // Modals
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [openInvoiceModal, setOpenInvoiceModal] = useState(false);
+  const [openEditInvoiceModal, setOpenEditInvoiceModal] = useState(false);
   const [openPatModal, setOpenPatModal] = useState(false);
+
+  // Active Invoice Form State (for printing & editing)
+  const [invoiceForm, setInvoiceForm] = useState({
+    invoice_no: '6807-217',
+    invoice_date: '',
+    credit_days: '30 DAYS',
+    customer_name: '',
+    customer_branch: 'สำนักงานใหญ่',
+    customer_address: '',
+    customer_tax_id: '',
+    container_no: '',
+    container_type_20: 0,
+    container_type_40: 1,
+    transport_description: 'TRANSPORTATION CHARGE @ 5,700.00',
+    transport_amount: 5700,
+    consignee_shipper: 'SHIPPER: ELECTRICAL COMPONENTS CO.,LTD.',
+    booking_bl: 'BOOKING NO. 256674749',
+    route_note: '( KRC - KLONGLUANG - LCB B1 )',
+    extra_items: [] as ExtraChargeItem[],
+  });
 
   const fetchData = async () => {
     setLoading(true);
@@ -89,7 +154,7 @@ export default function InvoicingPage() {
 
   useEffect(() => {
     fetchData();
-    setTodayDateStr(new Date().toLocaleDateString('th-TH'));
+    setTodayDateStr(toThaiDateString(new Date()));
   }, []);
 
   // Update PAT Status
@@ -100,6 +165,14 @@ export default function InvoicingPage() {
       .eq('id', jobId);
 
     if (!error) {
+      logActivity({
+        user_id: currentUser?.id || 'sys',
+        user_name: currentUser?.name || 'User',
+        user_role: currentRole?.id || 'accountant',
+        action: 'UPDATE',
+        module: 'INVOICING',
+        description: `อัปเดตสถานะจดหมาย PAT ของงาน ${jobId} เป็น ${newStatus}`,
+      });
       fetchData();
     } else {
       alert('เกิดข้อผิดพลาดในการอัปเดตสถานะ PAT: ' + error.message);
@@ -115,6 +188,14 @@ export default function InvoicingPage() {
       .eq('id', jobId);
 
     if (!error) {
+      logActivity({
+        user_id: currentUser?.id || 'sys',
+        user_name: currentUser?.name || 'User',
+        user_role: currentRole?.id || 'accountant',
+        action: 'CLOSE_JOB',
+        module: 'INVOICING',
+        description: `ปิดงานขนส่งสำเร็จ: Job ID ${jobId}`,
+      });
       alert('✅ ปิดงานและสรุปผลกำไรสำเร็จ!');
       fetchData();
     } else {
@@ -122,10 +203,82 @@ export default function InvoicingPage() {
     }
   };
 
+  // Populate Invoice Form from Job
+  const populateInvoiceFromJob = (job: Job) => {
+    const is20 = job.container_size === '20';
+    const amount = job.container_amount || 1;
+    const singleRate = Number(job.price || job.revenue || 5500) / amount;
+    const totalTransport = Number(job.revenue || 5500);
+
+    const generatedInvNo = job.invoice_no || `6807-${job.job_no.replace('TMS-', '').replace(/^[0-9]+-/, '') || '217'}`;
+
+    setInvoiceForm({
+      invoice_no: generatedInvNo,
+      invoice_date: todayDateStr || toThaiDateString(new Date()),
+      credit_days: job.customer?.credit_term_days ? `${job.customer.credit_term_days} DAYS` : '30 DAYS',
+      customer_name: job.customer?.company_name || 'บริษัท ปทุม ทรานสปอร์ต จำกัด',
+      customer_branch: job.customer?.branch || 'สำนักงานใหญ่',
+      customer_address: job.customer?.address || '66/53 หมู่ที่ 19 ต.คลองหนึ่ง อ.คลองหลวง จ.ปทุมธานี 12120',
+      customer_tax_id: job.customer?.tax_id || '0135563000175',
+      container_no: job.container_no || 'TLLU2959650',
+      container_type_20: is20 ? amount : 0,
+      container_type_40: !is20 ? amount : 0,
+      transport_description: `TRANSPORTATION CHARGE @ ${singleRate.toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
+      transport_amount: totalTransport,
+      consignee_shipper: job.shipper_name ? `SHIPPER: ${job.shipper_name}` : 'SHIPPER: ELECTRICAL COMPONENTS CO.,LTD.',
+      booking_bl: job.book_no ? `BOOKING NO. ${job.book_no}` : job.bl_no ? `B/L NO. ${job.bl_no}` : 'BOOKING NO. 256674749',
+      route_note: `( ${job.pickup_place || job.origin?.name || 'KRC'} - ${job.packing_place || 'KLONGLUANG'} - ${job.return_place || job.destination?.name || 'LCB B1'} )`,
+      extra_items: [
+        {
+          id: 'item_1',
+          description: 'LIFT ON/OFF & GATE CHARGE',
+          formula: '=2*220+2*600',
+          amount: 1640.00,
+          category: 'advance',
+        }
+      ],
+    });
+  };
+
   // Open Invoice Modal
   const handleOpenInvoice = (job: Job) => {
     setSelectedJob(job);
+    populateInvoiceFromJob(job);
     setOpenInvoiceModal(true);
+  };
+
+  // Open Edit / Revise Invoice Modal
+  const handleOpenEditInvoice = (job: Job) => {
+    setSelectedJob(job);
+    populateInvoiceFromJob(job);
+    setOpenEditInvoiceModal(true);
+  };
+
+  // Save Revised Invoice
+  const handleSaveRevisedInvoice = async () => {
+    if (!selectedJob) return;
+
+    // Update job record with invoice_no
+    const { error } = await supabase
+      .from('jobs')
+      .update({ invoice_no: invoiceForm.invoice_no })
+      .eq('id', selectedJob.id);
+
+    if (!error) {
+      logActivity({
+        user_id: currentUser?.id || 'sys',
+        user_name: currentUser?.name || 'User',
+        user_role: currentRole?.id || 'accountant',
+        action: 'UPDATE',
+        module: 'INVOICING',
+        description: `ปรับปรุงใบแจ้งหนี้ (Revise Invoice): ${invoiceForm.invoice_no} สำหรับงาน ${selectedJob.job_no}`,
+      });
+      setOpenEditInvoiceModal(false);
+      fetchData();
+      alert(`✅ บันทึกการแก้ไขใบแจ้งหนี้ ${invoiceForm.invoice_no} เรียบร้อยแล้ว!`);
+    } else {
+      alert('เกิดข้อผิดพลาดในการบันทึก: ' + error.message);
+    }
   };
 
   // Open PAT Modal
@@ -133,6 +286,22 @@ export default function InvoicingPage() {
     setSelectedJob(job);
     setOpenPatModal(true);
   };
+
+  // Calculate Totals
+  const totalAdvance = invoiceForm.extra_items
+    .filter(i => i.category === 'advance')
+    .reduce((sum, item) => sum + Number(item.amount || 0), 0);
+
+  const totalTransport = Number(invoiceForm.transport_amount || 0) + 
+    invoiceForm.extra_items
+      .filter(i => i.category === 'transport')
+      .reduce((sum, item) => sum + Number(item.amount || 0), 0);
+
+  // WHT 1% is computed ONLY on transport (Advance is 0% tax!)
+  const tax1Percent = Math.round((totalTransport * 0.01) * 100) / 100;
+  const netTransport = totalTransport - tax1Percent;
+  const netAdvance = totalAdvance;
+  const grandTotal = netAdvance + netTransport;
 
   // Filter Jobs
   const patJobs = jobs.filter((j) => j.pat_letter_required);
@@ -150,29 +319,31 @@ export default function InvoicingPage() {
         <div>
           <div className="flex items-center gap-2">
             <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-blue-100 text-blue-800">
-              Module 5: Invoicing & Closing
+              Module 5: Invoicing &amp; Closing
             </span>
-            <span className="text-xs text-slate-500">Connect Transport Co., Ltd.</span>
+            <span className="text-xs text-slate-500">Connect Transport Co., Ltd. (สาขาที่ 00001)</span>
           </div>
           <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-slate-900 mt-1 flex items-center gap-2">
             <ReceiptText className="h-7 w-7 text-blue-600" />
-            การออกบิลและการปิดงาน (Invoicing & Closing)
+            การออกบิลและการปิดงาน (Invoicing &amp; Closing)
           </h1>
           <p className="text-slate-500 text-sm">
-            ออกใบแจ้งหนี้เรียกเก็บเงินลูกค้า (Invoice), จัดการจดหมายเปลี่ยนใบเสร็จท่าเรือ (PAT Letter) และสรุปปิดงาน
+            ออกใบแจ้งหนี้จริง (แยกเงินทดรองจ่าย &amp; ค่าขนส่ง หักภาษี 1% เฉพาะค่าขนส่ง พร้อมช่องสูตรคำนวณ Excel) และจดหมายท่าเรือ PAT
           </p>
         </div>
 
-        <Button 
-          variant="outline" 
-          size="sm" 
-          onClick={fetchData} 
-          disabled={loading}
-          className="gap-2 self-start md:self-auto"
-        >
-          <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-          รีเฟรชข้อมูล
-        </Button>
+        <div className="flex items-center gap-2 self-start md:self-auto">
+          <Button 
+            variant="outline" 
+            size="sm" 
+            onClick={fetchData} 
+            disabled={loading}
+            className="gap-2"
+          >
+            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+            รีเฟรชข้อมูล
+          </Button>
+        </div>
       </div>
 
       {/* KPI Cards */}
@@ -227,7 +398,7 @@ export default function InvoicingPage() {
         <TabsList className="bg-slate-200 p-1 rounded-xl">
           <TabsTrigger value="invoices" className="gap-2">
             <ReceiptText className="h-4 w-4" />
-            การออกใบแจ้งหนี้ & วางบิล ({jobs.length})
+            การออกใบแจ้งหนี้ &amp; วางบิล ({jobs.length})
           </TabsTrigger>
           <TabsTrigger value="pat-letters" className="gap-2">
             <Anchor className="h-4 w-4 text-purple-700" />
@@ -240,9 +411,9 @@ export default function InvoicingPage() {
           <Card className="border-slate-200 shadow-sm">
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <div>
-                <CardTitle className="text-base font-bold">รายการงานขนส่งสำหรับวางบิลลูกค้า</CardTitle>
+                <CardTitle className="text-base font-bold">รายการงานขนส่งสำหรับออกบิลลูกค้า</CardTitle>
                 <CardDescription>
-                  ออกใบแจ้งหนี้ (Invoice) มาตรฐาน คำนวณหัก ณ ที่จ่าย 1% และปิดงาน
+                  ออกใบแจ้งหนี้ (Invoice) มาตรฐาน Connect Transport, คำนวณหัก ณ ที่จ่าย 1% เฉพาะค่าขนส่ง และ Revise บิลได้ตลอดเวลา
                 </CardDescription>
               </div>
             </CardHeader>
@@ -250,91 +421,98 @@ export default function InvoicingPage() {
               <div className="rounded-md border overflow-x-auto">
                 <Table>
                   <TableHeader>
-                    <TableRow className="bg-slate-100/70">
-                      <TableHead className="font-semibold text-slate-800">Job ID</TableHead>
-                      <TableHead className="font-semibold text-slate-800">วันที่</TableHead>
-                      <TableHead className="font-semibold text-slate-800">ลูกค้า (Customer)</TableHead>
-                      <TableHead className="font-semibold text-slate-800">เส้นทาง</TableHead>
-                      <TableHead className="font-semibold text-slate-800">เลขตู้ / ซีล</TableHead>
-                      <TableHead className="font-semibold text-slate-800">สถานะงาน</TableHead>
-                      <TableHead className="text-right font-semibold text-slate-800">ยอดเรียกเก็บ (บาท)</TableHead>
-                      <TableHead className="text-right font-semibold text-slate-800">กำไรสุทธิ</TableHead>
-                      <TableHead className="text-center font-semibold text-slate-800">จัดการเอกสาร</TableHead>
+                    <TableRow className="bg-slate-100/70 text-xs">
+                      <TableHead className="font-bold text-blue-900">Job ID</TableHead>
+                      <TableHead className="font-bold">วันที่วิ่งงาน</TableHead>
+                      <TableHead className="font-bold">ลูกค้าผู้ว่าจ้าง</TableHead>
+                      <TableHead className="font-bold text-purple-900">Invoice No.</TableHead>
+                      <TableHead>หมายเลขตู้ / ซีล</TableHead>
+                      <TableHead>สถานะงาน</TableHead>
+                      <TableHead className="text-right font-bold text-slate-900">ยอดเรียกเก็บ (บาท)</TableHead>
+                      <TableHead className="text-right font-bold text-emerald-800">กำไรสุทธิ</TableHead>
+                      <TableHead className="text-center">จัดการบิล</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {jobs.length === 0 ? (
-                      <TableRow>
-                        <TableCell colSpan={9} className="text-center py-8 text-slate-500">
-                          ยังไม่มีงานขนส่งในระบบ
+                    {jobs.map((j) => (
+                      <TableRow key={j.id} className="hover:bg-slate-50/80 text-xs">
+                        <TableCell className="font-bold text-blue-700 font-mono whitespace-nowrap">
+                          {j.job_no}
                         </TableCell>
-                      </TableRow>
-                    ) : (
-                      jobs.map((j) => (
-                        <TableRow key={j.id} className="hover:bg-slate-50/80">
-                          <TableCell className="font-bold text-blue-700 whitespace-nowrap">
-                            {j.job_no}
-                          </TableCell>
-                          <TableCell className="text-xs text-slate-600 whitespace-nowrap">
-                            {j.job_date}
-                          </TableCell>
-                          <TableCell className="font-semibold text-slate-900 max-w-[170px] truncate">
-                            {j.customer?.company_name || 'ลูกค้าทั่วไป'}
-                          </TableCell>
-                          <TableCell className="text-xs">
-                            <span className="font-medium text-slate-900">{j.origin?.name}</span>
-                            <span className="mx-1 text-slate-400">➔</span>
-                            <span>{j.destination?.name}</span>
-                          </TableCell>
-                          <TableCell className="text-xs font-mono">
-                            {j.container_no ? (
-                              <span className="font-semibold text-blue-900">{j.container_no}</span>
-                            ) : (
-                              <span className="text-slate-400">-</span>
-                            )}
-                          </TableCell>
-                          <TableCell>
-                            {j.status === 'completed' ? (
-                              <Badge className="bg-emerald-600 text-white font-medium">ปิดงานแล้ว</Badge>
-                            ) : (
-                              <Badge variant="outline" className="border-amber-300 bg-amber-50 text-amber-800">
-                                {j.status}
-                              </Badge>
-                            )}
-                          </TableCell>
-                          <TableCell className="text-right font-bold text-slate-900">
-                            ฿{Number(j.revenue).toLocaleString()}
-                          </TableCell>
-                          <TableCell className="text-right font-semibold text-emerald-700 text-xs">
-                            ฿{Number(j.net_profit).toLocaleString()}
-                          </TableCell>
-                          <TableCell className="text-center whitespace-nowrap">
-                            <div className="flex items-center justify-center gap-1.5">
+                        <TableCell className="text-slate-600 whitespace-nowrap">
+                          {j.job_date}
+                        </TableCell>
+                        <TableCell className="font-semibold text-slate-900 max-w-[170px] truncate">
+                          {j.customer?.company_name || 'ลูกค้าทั่วไป'}
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap font-mono font-bold">
+                          {j.invoice_no ? (
+                            <span className="px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200">
+                              {j.invoice_no}
+                            </span>
+                          ) : (
+                            <span className="text-slate-400 italic">ยังไม่ออกบิล</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="font-mono">
+                          {j.container_no ? (
+                            <span className="font-bold text-slate-900">{j.container_no}</span>
+                          ) : (
+                            <span className="text-slate-400">-</span>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {j.status === 'completed' ? (
+                            <Badge className="bg-emerald-600 text-white font-medium text-[11px]">ปิดงานแล้ว</Badge>
+                          ) : (
+                            <Badge variant="outline" className="border-amber-300 bg-amber-50 text-amber-800 text-[11px]">
+                              {j.status}
+                            </Badge>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-right font-bold text-slate-900">
+                          ฿{Number(j.revenue || 0).toLocaleString()}
+                        </TableCell>
+                        <TableCell className="text-right font-bold text-emerald-700">
+                          ฿{Number(j.net_profit || 0).toLocaleString()}
+                        </TableCell>
+                        <TableCell className="text-center whitespace-nowrap">
+                          <div className="flex items-center justify-center gap-1.5">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleOpenInvoice(j)}
+                              className="h-8 text-xs gap-1 border-blue-300 text-blue-700 hover:bg-blue-50 font-semibold"
+                            >
+                              <Printer className="h-3.5 w-3.5" />
+                              พิมพ์ Invoice
+                            </Button>
+
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleOpenEditInvoice(j)}
+                              className="h-8 text-xs gap-1 border-amber-300 text-amber-800 hover:bg-amber-50"
+                              title="แก้ไข / ปรับปรุงบิล และสูตรคำนวณ Excel"
+                            >
+                              <Edit3 className="h-3.5 w-3.5" />
+                              แก้ไขบิล
+                            </Button>
+
+                            {j.status !== 'completed' && (
                               <Button
                                 size="sm"
-                                variant="outline"
-                                onClick={() => handleOpenInvoice(j)}
-                                className="h-8 text-xs gap-1 border-blue-300 text-blue-700 hover:bg-blue-50"
+                                onClick={() => handleCloseJob(j.id)}
+                                className="h-8 text-xs gap-1 bg-emerald-600 hover:bg-emerald-700 text-white"
                               >
-                                <Printer className="h-3.5 w-3.5" />
-                                พิมพ์ใบแจ้งหนี้ (Invoice)
+                                <CheckCircle2 className="h-3.5 w-3.5" />
+                                ปิดงาน
                               </Button>
-
-                              {j.status !== 'completed' && (
-                                <Button
-                                  size="sm"
-                                  onClick={() => handleCloseJob(j.id)}
-                                  className="h-8 text-xs gap-1 bg-emerald-600 hover:bg-emerald-700 text-white"
-                                >
-                                  <CheckCircle2 className="h-3.5 w-3.5" />
-                                  ปิดงาน
-                                </Button>
-                              )}
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                      ))
-                    )}
+                            )}
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
                   </TableBody>
                 </Table>
               </div>
@@ -360,67 +538,54 @@ export default function InvoicingPage() {
               <div className="rounded-md border overflow-x-auto">
                 <Table>
                   <TableHeader>
-                    <TableRow className="bg-slate-100/70">
-                      <TableHead className="font-semibold text-slate-800">Job ID</TableHead>
-                      <TableHead className="font-semibold text-slate-800">วันที่</TableHead>
-                      <TableHead className="font-semibold text-slate-800">บริษัทลูกค้า (ผู้ออกใบเสร็จใหม่)</TableHead>
-                      <TableHead className="font-semibold text-slate-800">เลขประจำตัวผู้เสียภาษี</TableHead>
-                      <TableHead className="font-semibold text-slate-800">เลขตู้คอนเทนเนอร์</TableHead>
-                      <TableHead className="font-semibold text-slate-800">สถานะจดหมาย PAT</TableHead>
-                      <TableHead className="text-center font-semibold text-slate-800">การดำเนินการ</TableHead>
+                    <TableRow className="bg-slate-100/70 text-xs">
+                      <TableHead className="font-bold text-blue-900">Job ID</TableHead>
+                      <TableHead className="font-bold">วันที่</TableHead>
+                      <TableHead className="font-bold">บริษัทลูกค้า (ผู้ออกใบเสร็จใหม่)</TableHead>
+                      <TableHead>เลขประจำตัวผู้เสียภาษี</TableHead>
+                      <TableHead>เลขตู้คอนเทนเนอร์</TableHead>
+                      <TableHead>สถานะจดหมาย PAT</TableHead>
+                      <TableHead className="text-center font-semibold">การดำเนินการ</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {patJobs.length === 0 ? (
-                      <TableRow>
-                        <TableCell colSpan={7} className="text-center py-8 text-slate-500">
-                          ไม่มีรายการงานที่ต้องทำจดหมายเปลี่ยนใบเสร็จท่าเรือ
+                    {patJobs.map((j) => (
+                      <TableRow key={j.id} className="hover:bg-slate-50/80 text-xs">
+                        <TableCell className="font-bold text-blue-700 font-mono">{j.job_no}</TableCell>
+                        <TableCell className="text-slate-600">{j.job_date}</TableCell>
+                        <TableCell className="font-bold text-slate-900">{j.customer?.company_name}</TableCell>
+                        <TableCell className="font-mono text-slate-700">{j.customer?.tax_id || '-'}</TableCell>
+                        <TableCell className="font-mono font-bold text-purple-900">{j.container_no || 'ยังไม่ระบุ'}</TableCell>
+                        <TableCell>
+                          <Badge variant="outline" className={patStatusMap[j.pat_letter_status]?.badgeClass || ''}>
+                            {patStatusMap[j.pat_letter_status]?.label || j.pat_letter_status}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-center whitespace-nowrap">
+                          <div className="flex items-center justify-center gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleOpenPat(j)}
+                              className="h-8 text-xs gap-1 border-purple-300 text-purple-700 hover:bg-purple-50 font-semibold"
+                            >
+                              <Printer className="h-3.5 w-3.5" />
+                              พิมพ์จดหมาย PAT
+                            </Button>
+
+                            <select
+                              className="border rounded px-2 py-1 text-xs bg-white border-slate-300"
+                              value={j.pat_letter_status}
+                              onChange={(e) => handleUpdatePatStatus(j.id, e.target.value)}
+                            >
+                              <option value="pending">รอออกจดหมาย</option>
+                              <option value="issued">ออกจดหมายแล้ว</option>
+                              <option value="completed">เปลี่ยนสำเร็จ</option>
+                            </select>
+                          </div>
                         </TableCell>
                       </TableRow>
-                    ) : (
-                      patJobs.map((j) => (
-                        <TableRow key={j.id} className="hover:bg-slate-50/80">
-                          <TableCell className="font-bold text-blue-700">{j.job_no}</TableCell>
-                          <TableCell className="text-xs text-slate-600">{j.job_date}</TableCell>
-                          <TableCell className="font-semibold text-slate-900">{j.customer?.company_name}</TableCell>
-                          <TableCell className="text-xs font-mono">{j.customer?.tax_id || '-'}</TableCell>
-                          <TableCell className="font-mono text-xs font-semibold text-purple-900">
-                            {j.container_no || 'ยังไม่ระบุเลขตู้'}
-                          </TableCell>
-                          <TableCell>
-                            <Badge 
-                              variant="outline" 
-                              className={`font-medium ${patStatusMap[j.pat_letter_status]?.badgeClass || ''}`}
-                            >
-                              {patStatusMap[j.pat_letter_status]?.label || j.pat_letter_status}
-                            </Badge>
-                          </TableCell>
-                          <TableCell className="text-center whitespace-nowrap">
-                            <div className="flex items-center justify-center gap-2">
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => handleOpenPat(j)}
-                                className="h-8 text-xs gap-1 border-purple-300 text-purple-700 hover:bg-purple-50"
-                              >
-                                <Printer className="h-3.5 w-3.5" />
-                                พิมพ์จดหมาย PAT
-                              </Button>
-
-                              <select
-                                className="border rounded px-2 py-1 text-xs bg-white border-slate-300"
-                                value={j.pat_letter_status}
-                                onChange={(e) => handleUpdatePatStatus(j.id, e.target.value)}
-                              >
-                                <option value="pending">รอออกจดหมาย</option>
-                                <option value="issued">ออกจดหมายแล้ว</option>
-                                <option value="completed">เปลี่ยนสำเร็จ</option>
-                              </select>
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                      ))
-                    )}
+                    ))}
                   </TableBody>
                 </Table>
               </div>
@@ -429,24 +594,40 @@ export default function InvoicingPage() {
         </TabsContent>
       </Tabs>
 
-      {/* ================= MODAL 1: PRINTABLE INVOICE ================= */}
+      {/* ================= MODAL: PRINTABLE INVOICE (REAL LAYOUT) ================= */}
       <Dialog open={openInvoiceModal} onOpenChange={setOpenInvoiceModal}>
-        <DialogContent className="sm:max-w-[750px] max-h-[90vh] overflow-y-auto">
+        <DialogContent className="sm:max-w-[780px] max-h-[90vh] overflow-y-auto">
           <DialogHeader className="print:hidden">
-            <DialogTitle className="flex items-center gap-2">
-              <Printer className="h-5 w-5 text-blue-600" />
-              พิมพ์ใบแจ้งหนี้ / ใบวางบิล (Tax Invoice / Billing Note)
-            </DialogTitle>
-            <DialogDescription>
-              เอกสารสำหรับเรียกเก็บเงินลูกค้าตามมาตรฐานบัญชีไทย (คำนวณหัก ณ ที่จ่าย 1%)
-            </DialogDescription>
+            <div className="flex items-center justify-between">
+              <div>
+                <DialogTitle className="flex items-center gap-2 text-lg">
+                  <ReceiptText className="h-5 w-5 text-blue-600" />
+                  ใบแจ้งหนี้ / INVOICE (แบบฟอร์มทางการ Connect Transport)
+                </DialogTitle>
+                <DialogDescription>
+                  แยก 2 คอลัมน์ (เงินทดรองจ่าย &amp; ค่าขนส่ง) หักภาษี 1% เฉพาะค่าขนส่ง
+                </DialogDescription>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setOpenInvoiceModal(false);
+                  setOpenEditInvoiceModal(true);
+                }}
+                className="gap-1.5 text-xs text-amber-800 border-amber-300 hover:bg-amber-50"
+              >
+                <Edit3 className="h-3.5 w-3.5" />
+                แก้ไขตัวเลข / สูตร (Revise)
+              </Button>
+            </div>
           </DialogHeader>
 
           {/* Printable Invoice Sheet */}
-          <div className="border-2 border-slate-900 p-8 rounded-lg bg-white text-slate-900 space-y-5 print:border-none print:p-0">
-            {/* Header */}
-            <div className="border-b-2 border-slate-900 pb-4 flex justify-between items-start gap-4">
-              <div className="flex items-start gap-4">
+          <div className="border border-slate-900 p-6 rounded-lg bg-white text-slate-900 space-y-4 print:border-none print:p-0 font-sans">
+            {/* Header with Logo */}
+            <div className="border-b-2 border-slate-900 pb-3 flex justify-between items-start gap-4">
+              <div className="flex items-start gap-3">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img 
                   src="/images/logo-print.png" 
@@ -454,132 +635,164 @@ export default function InvoicingPage() {
                   className="h-14 w-auto object-contain mt-1" 
                 />
                 <div>
-                  <h2 className="text-lg font-black text-slate-900 leading-tight">
-                    บริษัท คอนเนค ทรานสปอร์ต จำกัด <span className="text-xs font-bold text-slate-600">( สาขาที่ 00001 )</span>
+                  <h2 className="text-base font-black text-slate-900 leading-tight">
+                    CONNECT TRANSPORT CO.,LTD.
                   </h2>
-                  <p className="text-xs font-bold text-blue-900">CONNECT TRANSPORT CO.,LTD.</p>
+                  <p className="text-xs font-bold text-slate-800">บริษัท คอนเนค ทรานสปอร์ต จำกัด ( สาขาที่ 00001 )</p>
                   <p className="text-[11px] text-slate-600 mt-0.5 leading-snug">
                     369/1 ถนนเลียบคลองมอญ แขวงทับยาว เขตลาดกระบัง กรุงเทพฯ 10520<br />
                     369/1 LIAP KHLONG MON ROAD, THAP YAO, LAT KRABANG, BANGKOK 10520
                   </p>
-                  <p className="text-[11px] text-slate-600 mt-0.5">
+                  <p className="text-[10px] text-slate-600 mt-0.5">
                     TEL : 089-5351313 &nbsp;|&nbsp; FAX : 02-1167337 &nbsp;|&nbsp; E-MAIL : yodsapol@connecttransport.co.th
                   </p>
-                  <p className="text-[11px] font-bold text-slate-800 mt-0.5">
-                    เลขประจำตัวผู้เสียภาษี 0115557007317
-                  </p>
                 </div>
               </div>
+
               <div className="text-right shrink-0">
-                <div className="text-xl font-black text-slate-900 leading-tight">ใบแจ้งหนี้ / INVOICE</div>
-                <div className="mt-2 text-xs space-y-0.5">
-                  <div>วันที่ / DATE: <strong className="font-mono">{todayDateStr}</strong></div>
-                  <div>INVOICE NO: <strong className="font-mono text-blue-800 text-sm">6807-{selectedJob?.job_no.replace('TMS-', '') || '217'}</strong></div>
-                  <div>CREDIT: <strong className="text-rose-600 font-bold">30 DAYS</strong></div>
+                <div className="text-lg font-black text-slate-900 leading-tight">ใบแจ้งหนี้ / INVOICE</div>
+                <div className="text-[11px] text-slate-700 font-mono mt-1">เลขประจำตัวผู้เสียภาษี 0115557007317</div>
+              </div>
+            </div>
+
+            {/* Bill To & Invoice Meta Box */}
+            <div className="border border-slate-800 text-xs">
+              <div className="grid grid-cols-3">
+                <div className="col-span-2 p-2.5 border-r border-slate-800 space-y-1">
+                  <div><strong>ชื่อ / NAME:</strong> {invoiceForm.customer_name} ({invoiceForm.customer_branch})</div>
+                  <div><strong>ที่อยู่ / ADDRESS:</strong> {invoiceForm.customer_address}</div>
+                  <div><strong>TAX ID:</strong> <span className="font-mono font-bold">{invoiceForm.customer_tax_id}</span></div>
+                </div>
+                <div className="p-2.5 space-y-1">
+                  <div><strong>วันที่ / DATE:</strong> {invoiceForm.invoice_date}</div>
+                  <div><strong>INVOICE NO:</strong> <span className="font-mono font-bold text-blue-900">{invoiceForm.invoice_no}</span></div>
+                  <div><strong>CREDIT:</strong> <span className="font-bold text-rose-600">{invoiceForm.credit_days}</span></div>
                 </div>
               </div>
             </div>
 
-            {/* Customer Info */}
-            <div className="p-3 bg-slate-50 rounded border text-xs grid grid-cols-2 gap-3">
-              <div>
-                <div className="font-bold text-slate-800">ลูกค้า (Bill To):</div>
-                <div className="font-semibold text-slate-900 text-sm mt-0.5">{selectedJob?.customer?.company_name}</div>
-                <div className="text-slate-600 mt-0.5">{selectedJob?.customer?.address || 'ไม่ระบุที่อยู่'}</div>
-                <div className="text-slate-600 mt-0.5">เลขผู้เสียภาษี: {selectedJob?.customer?.tax_id || '-'}</div>
-              </div>
-              <div>
-                <div className="font-bold text-slate-800">เงื่อนไขการชำระ:</div>
-                <div className="text-slate-700 mt-0.5">เครดิตเทอม: 30 วัน</div>
-                <div className="text-slate-700 mt-0.5">ผู้ติดต่อ: {selectedJob?.customer?.contact_name || '-'}</div>
-                <div className="text-slate-700 mt-0.5">เบอร์โทร: {selectedJob?.customer?.phone || '-'}</div>
+            {/* Main Invoice Table (2 Columns: Advance vs Transport) */}
+            <div className="border border-slate-800">
+              <table className="w-full text-xs border-collapse">
+                <thead>
+                  <tr className="bg-slate-100 border-b border-slate-800 text-center font-bold">
+                    <th className="border-r border-slate-800 py-1.5 px-2 w-20">วันที่<br/><span className="text-[10px] font-normal">Date</span></th>
+                    <th className="border-r border-slate-800 py-1.5 px-2 w-28">หมายเลขตู้<br/><span className="text-[10px] font-normal">Container No.</span></th>
+                    <th className="border-r border-slate-800 py-1.5 px-2 w-16">
+                      type<br/>
+                      <span className="text-[10px] font-normal">20&apos; &nbsp; 40&apos;</span>
+                    </th>
+                    <th className="border-r border-slate-800 py-1.5 px-2 text-left">รายละเอียด<br/><span className="text-[10px] font-normal">Description</span></th>
+                    <th className="border-r border-slate-800 py-1.5 px-2 w-28 text-right">เงินทดรองจ่าย<br/><span className="text-[10px] font-normal">Advance</span></th>
+                    <th className="py-1.5 px-2 w-28 text-right">ค่าขนส่ง<br/><span className="text-[10px] font-normal">Transport</span></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {/* Line 1: Main Transport */}
+                  <tr className="align-top">
+                    <td className="border-r border-slate-800 p-2 text-center font-mono">{selectedJob?.job_date || invoiceForm.invoice_date}</td>
+                    <td className="border-r border-slate-800 p-2 font-mono font-bold">{invoiceForm.container_no}</td>
+                    <td className="border-r border-slate-800 p-2 text-center font-mono font-bold">
+                      {invoiceForm.container_type_20 > 0 ? `${invoiceForm.container_type_20} ` : ''}
+                      {invoiceForm.container_type_40 > 0 ? ` ${invoiceForm.container_type_40}` : ''}
+                    </td>
+                    <td className="border-r border-slate-800 p-2 space-y-0.5">
+                      <div className="font-bold text-slate-900">{invoiceForm.transport_description}</div>
+                      
+                      {/* Extra Items (Advance charges) */}
+                      {invoiceForm.extra_items.map((item) => (
+                        <div key={item.id} className="pt-0.5 font-bold text-slate-900 flex items-center justify-between">
+                          <span>{item.description}</span>
+                          {item.formula && (
+                            <span className="text-[10px] font-mono text-slate-400 font-normal">
+                              [ที่มา: {item.formula}]
+                            </span>
+                          )}
+                        </div>
+                      ))}
+
+                      {/* Consignee, Shipper, Booking, Route Notes */}
+                      <div className="text-[11px] text-slate-700 pt-1 font-semibold">{invoiceForm.consignee_shipper}</div>
+                      <div className="text-[11px] text-slate-700 font-semibold">{invoiceForm.booking_bl}</div>
+                      <div className="text-[11px] text-slate-700 font-mono font-semibold">{invoiceForm.route_note}</div>
+                    </td>
+                    {/* Advance Column */}
+                    <td className="border-r border-slate-800 p-2 text-right font-mono font-bold">
+                      {totalAdvance > 0 ? totalAdvance.toLocaleString('en-US', { minimumFractionDigits: 2 }) : ''}
+                    </td>
+                    {/* Transport Column */}
+                    <td className="p-2 text-right font-mono font-bold">
+                      {totalTransport.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                    </td>
+                  </tr>
+
+                  {/* Empty rows to maintain table height like original form */}
+                  <tr className="h-28 border-b border-slate-800">
+                    <td className="border-r border-slate-800"></td>
+                    <td className="border-r border-slate-800"></td>
+                    <td className="border-r border-slate-800"></td>
+                    <td className="border-r border-slate-800"></td>
+                    <td className="border-r border-slate-800"></td>
+                    <td></td>
+                  </tr>
+                </tbody>
+              </table>
+
+              {/* Bottom Summary Table */}
+              <div className="border-t border-slate-800">
+                <table className="w-full text-xs border-collapse">
+                  <tbody>
+                    <tr className="border-b border-slate-800 font-bold">
+                      <td className="py-1 px-3 text-right">Total</td>
+                      <td className="py-1 px-3 text-right font-mono border-l border-slate-800 w-28">
+                        {totalAdvance.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                      </td>
+                      <td className="py-1 px-3 text-right font-mono border-l border-slate-800 w-28">
+                        {totalTransport.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                      </td>
+                    </tr>
+                    <tr className="border-b border-slate-800 font-bold">
+                      <td className="py-1 px-3 text-right">Tax 1% (คิดเฉพาะค่าขนส่ง)</td>
+                      <td className="py-1 px-3 text-right font-mono border-l border-slate-800 w-28 text-slate-400">-</td>
+                      <td className="py-1 px-3 text-right font-mono border-l border-slate-800 w-28 text-rose-600">
+                        {tax1Percent.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                      </td>
+                    </tr>
+                    <tr className="border-b border-slate-800 font-bold bg-slate-50">
+                      <td className="py-1 px-3 text-right">Total Baht</td>
+                      <td className="py-1 px-3 text-right font-mono border-l border-slate-800 w-28">
+                        {netAdvance.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                      </td>
+                      <td className="py-1 px-3 text-right font-mono border-l border-slate-800 w-28">
+                        {netTransport.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                      </td>
+                    </tr>
+                    <tr className="font-black bg-slate-100 text-sm">
+                      <td className="py-1.5 px-3 text-right text-blue-900">Grand Total</td>
+                      <td colSpan={2} className="py-1.5 px-3 text-right font-mono border-l border-slate-800 text-blue-900">
+                        ฿{grandTotal.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
             </div>
 
-            {/* Line Items Table */}
-            <div className="border rounded overflow-hidden">
-              <Table>
-                <TableHeader>
-                  <TableRow className="bg-slate-100 text-xs font-bold text-slate-900">
-                    <TableHead className="w-12 text-center">ลำดับ</TableHead>
-                    <TableHead>รายละเอียดค่าบริการขนส่ง (Description)</TableHead>
-                    <TableHead className="text-center">สเปกตู้</TableHead>
-                    <TableHead className="text-right">จำนวนเงิน (บาท)</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  <TableRow className="text-xs">
-                    <TableCell className="text-center font-bold">1</TableCell>
-                    <TableCell>
-                      <div className="font-bold text-slate-900">
-                        ค่าบริการขนส่งตู้คอนเทนเนอร์: {selectedJob?.origin?.name} ➔ {selectedJob?.destination?.name}
-                      </div>
-                      <div className="text-slate-600 text-[11px] mt-0.5">
-                        หมายเลขตู้: <span className="font-mono font-semibold">{selectedJob?.container_no || '-'}</span> | ซีล: <span className="font-mono">{selectedJob?.seal_no || '-'}</span>
-                      </div>
-                      <div className="text-slate-500 text-[11px]">
-                        รถบรรทุก: {selectedJob?.vehicle?.plate_number || '-'} | พขร: {selectedJob?.driver?.name || '-'}
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-center font-mono">
-                      {selectedJob?.container_size}&apos; {selectedJob?.container_type}
-                    </TableCell>
-                    <TableCell className="text-right font-bold text-slate-900">
-                      ฿{Number(selectedJob?.revenue || 0).toLocaleString()}
-                    </TableCell>
-                  </TableRow>
-                </TableBody>
-              </Table>
-            </div>
-
-            {/* Calculations Breakdown */}
-            {(() => {
-              const subtotal = Number(selectedJob?.revenue || 0);
-              const wht1 = subtotal * 0.01; // 1% หัก ณ ที่จ่าย ค่าขนส่ง
-              const netAfterWht = subtotal - wht1;
-
-              return (
-                <div className="flex justify-end">
-                  <div className="w-72 p-3 bg-slate-50 rounded border text-xs space-y-1.5">
-                    <div className="flex justify-between text-slate-700">
-                      <span>ยอดรวมค่าขนส่ง (Subtotal):</span>
-                      <strong>฿{subtotal.toLocaleString()}</strong>
-                    </div>
-                    <div className="flex justify-between text-slate-700">
-                      <span>หัก ภาษี ณ ที่จ่าย 1% (WHT 1%):</span>
-                      <strong className="text-rose-600">- ฿{wht1.toLocaleString(undefined, { minimumFractionDigits: 2 })}</strong>
-                    </div>
-                    <div className="flex justify-between text-sm font-black pt-2 border-t border-slate-300 text-slate-900">
-                      <span>ยอดสุทธิที่ต้องชำระ (Net Total):</span>
-                      <span className="text-blue-800">
-                        ฿{netAfterWht.toLocaleString(undefined, { minimumFractionDigits: 2 })} บาท
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              );
-            })()}
-
-            {/* Payment Bank Details */}
-            <div className="p-3 bg-blue-50/60 rounded border border-blue-200 text-xs">
-              <div className="font-bold text-blue-900">ข้อมูลการโอนเงินเข้าบัญชี (Bank Transfer):</div>
-              <div className="text-slate-700 mt-1">
-                ธนาคารกสิกรไทย (KBANK) | บัญชีกระแสรายวัน: <strong>045-8-99999-1</strong> | ชื่อบัญชี: <strong>บจก. คอนเนค ทรานสปอร์ต</strong>
+            {/* Signatures Block */}
+            <div className="pt-6 grid grid-cols-2 gap-8 text-xs">
+              <div className="space-y-1">
+                <div>ผู้รับวางบิล ................................................................</div>
+                <div>วันที่ .........................................................................</div>
+                <div>วันที่รับเช็ค ...............................................................</div>
+              </div>
+              <div className="text-right space-y-1">
+                <div>ผู้มีอำนาจลงนาม ........................................................</div>
+                <div>วันที่ {invoiceForm.invoice_date}</div>
               </div>
             </div>
 
-            {/* Signatures */}
-            <div className="grid grid-cols-2 gap-8 pt-6 text-center text-xs">
-              <div className="border-t border-slate-400 pt-2">
-                <div>( .................................................... )</div>
-                <div className="text-slate-600 text-[11px] mt-1">ผู้วางบิล / ฝ่ายบัญชีและการเงิน</div>
-                <div className="text-slate-400 text-[10px]">บจก. คอนเนค ทรานสปอร์ต</div>
-              </div>
-              <div className="border-t border-slate-400 pt-2">
-                <div>( .................................................... )</div>
-                <div className="text-slate-600 text-[11px] mt-1">ผู้รับวางบิล / วันที่รับวางบิล</div>
-                <div className="text-slate-400 text-[10px]">{selectedJob?.customer?.company_name}</div>
-              </div>
+            <div className="text-center text-[11px] text-slate-600 pt-2 border-t">
+              โปรดสั่งจ่ายเช็คขีดคร่อมในนาม <strong>&quot;บริษัท คอนเนค ทรานสปอร์ต จำกัด&quot;</strong> เท่านั้น
             </div>
           </div>
 
@@ -595,7 +808,198 @@ export default function InvoicingPage() {
         </DialogContent>
       </Dialog>
 
-      {/* ================= MODAL 2: PRINTABLE PAT LETTER ================= */}
+      {/* ================= MODAL: EDIT / REVISE INVOICE (FORMULA BREAKDOWN AUDIT) ================= */}
+      <Dialog open={openEditInvoiceModal} onOpenChange={setOpenEditInvoiceModal}>
+        <DialogContent className="sm:max-w-[700px] max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-lg">
+              <Edit3 className="h-5 w-5 text-amber-600" />
+              แก้ไขและปรับปรุงใบแจ้งหนี้ (Edit / Revise Invoice)
+            </DialogTitle>
+            <DialogDescription>
+              ปรับเปลี่ยนเลขที่บิล, วันที่, เครดิตเทอม และใส่สูตรคำนวณแบบ Excel ในรายการทดรองจ่าย
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2 text-xs">
+            {/* Meta Fields */}
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <Label className="text-xs font-bold text-blue-900">เลขที่ใบแจ้งหนี้ (Invoice No.)</Label>
+                <Input
+                  value={invoiceForm.invoice_no}
+                  onChange={(e) => setInvoiceForm({ ...invoiceForm, invoice_no: e.target.value })}
+                  className="font-mono font-bold"
+                />
+              </div>
+              <div>
+                <Label className="text-xs font-bold">วันที่ออกบิล</Label>
+                <Input
+                  value={invoiceForm.invoice_date}
+                  onChange={(e) => setInvoiceForm({ ...invoiceForm, invoice_date: e.target.value })}
+                />
+              </div>
+              <div>
+                <Label className="text-xs font-bold text-rose-600">Credit Term</Label>
+                <Input
+                  value={invoiceForm.credit_days}
+                  onChange={(e) => setInvoiceForm({ ...invoiceForm, credit_days: e.target.value })}
+                  placeholder="30 DAYS"
+                />
+              </div>
+            </div>
+
+            {/* Transport Charge */}
+            <div className="p-3 bg-slate-50 rounded-lg border space-y-2">
+              <div className="font-bold text-slate-900">ค่าบริการขนส่งหลัก (Transport Charge):</div>
+              <div className="grid grid-cols-3 gap-2">
+                <div className="col-span-2">
+                  <Input
+                    value={invoiceForm.transport_description}
+                    onChange={(e) => setInvoiceForm({ ...invoiceForm, transport_description: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <Input
+                    type="number"
+                    value={invoiceForm.transport_amount}
+                    onChange={(e) => setInvoiceForm({ ...invoiceForm, transport_amount: parseFloat(e.target.value) || 0 })}
+                    className="font-bold font-mono text-right"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Advance & Extra Charges (WITH EXCEL FORMULA BREAKDOWN) */}
+            <div className="p-3 bg-amber-50/60 rounded-lg border border-amber-200 space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="font-bold text-amber-950">รายการเงินทดรองจ่าย &amp; ช่องสูตรคำนวณ (Excel Formula):</span>
+                  <p className="text-[11px] text-amber-700">สามารถพิมพ์สูตรคณิตศาสตร์ เช่น =2*220+2*600 หรือ 150+150+300 เพื่อบันทึกที่มาของตัวเลข</p>
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    setInvoiceForm({
+                      ...invoiceForm,
+                      extra_items: [
+                        ...invoiceForm.extra_items,
+                        {
+                          id: 'item_' + Date.now(),
+                          description: 'LIFT OFF & EXTRA CHARGE',
+                          formula: '=150+150',
+                          amount: 300,
+                          category: 'advance',
+                        }
+                      ]
+                    });
+                  }}
+                  className="gap-1 text-xs bg-white text-amber-900 border-amber-300 hover:bg-amber-100"
+                >
+                  <Plus className="h-3 w-3" /> เพิ่มรายการ
+                </Button>
+              </div>
+
+              {invoiceForm.extra_items.map((item, idx) => (
+                <div key={item.id} className="p-2.5 bg-white rounded border space-y-2">
+                  <div className="grid grid-cols-12 gap-2 items-center">
+                    <div className="col-span-5">
+                      <Label className="text-[10px] text-slate-500">ชื่อรายการ</Label>
+                      <Input
+                        value={item.description}
+                        onChange={(e) => {
+                          const updated = [...invoiceForm.extra_items];
+                          updated[idx].description = e.target.value;
+                          setInvoiceForm({ ...invoiceForm, extra_items: updated });
+                        }}
+                        className="text-xs"
+                      />
+                    </div>
+                    <div className="col-span-4">
+                      <Label className="text-[10px] text-blue-700 font-bold flex items-center gap-1">
+                        <Calculator className="h-3 w-3" /> สูตรการคำนวณ (Excel Formula)
+                      </Label>
+                      <Input
+                        value={item.formula}
+                        placeholder="=2*220+2*600"
+                        onChange={(e) => {
+                          const updated = [...invoiceForm.extra_items];
+                          const formulaVal = e.target.value;
+                          updated[idx].formula = formulaVal;
+                          updated[idx].amount = evaluateMathFormula(formulaVal);
+                          setInvoiceForm({ ...invoiceForm, extra_items: updated });
+                        }}
+                        className="font-mono text-xs text-blue-900 font-bold"
+                      />
+                    </div>
+                    <div className="col-span-2">
+                      <Label className="text-[10px] text-slate-500">ผลลัพธ์ (บาท)</Label>
+                      <Input
+                        type="number"
+                        value={item.amount}
+                        onChange={(e) => {
+                          const updated = [...invoiceForm.extra_items];
+                          updated[idx].amount = parseFloat(e.target.value) || 0;
+                          setInvoiceForm({ ...invoiceForm, extra_items: updated });
+                        }}
+                        className="font-mono text-xs text-right font-bold text-emerald-800"
+                      />
+                    </div>
+                    <div className="col-span-1 pt-4 text-center">
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        onClick={() => {
+                          const updated = invoiceForm.extra_items.filter((_, i) => i !== idx);
+                          setInvoiceForm({ ...invoiceForm, extra_items: updated });
+                        }}
+                        className="h-8 w-8 text-rose-500 hover:text-rose-700"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Calculations Summary Preview */}
+            <div className="p-3 bg-slate-100 rounded-lg space-y-1 font-mono text-xs">
+              <div className="flex justify-between">
+                <span>ยอดเงินทดรองจ่าย (Total Advance):</span>
+                <strong>฿{totalAdvance.toLocaleString('en-US', { minimumFractionDigits: 2 })}</strong>
+              </div>
+              <div className="flex justify-between">
+                <span>ยอดค่าบริการขนส่ง (Total Transport):</span>
+                <strong>฿{totalTransport.toLocaleString('en-US', { minimumFractionDigits: 2 })}</strong>
+              </div>
+              <div className="flex justify-between text-rose-600">
+                <span>ภาษีหัก ณ ที่จ่าย 1% (เฉพาะค่าขนส่ง):</span>
+                <strong>-฿{tax1Percent.toLocaleString('en-US', { minimumFractionDigits: 2 })}</strong>
+              </div>
+              <div className="flex justify-between pt-1 border-t text-sm font-bold text-blue-900">
+                <span>ยอดสุทธิทั้งสิ้น (Grand Total):</span>
+                <strong>฿{grandTotal.toLocaleString('en-US', { minimumFractionDigits: 2 })}</strong>
+              </div>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setOpenEditInvoiceModal(false)}>
+              ยกเลิก
+            </Button>
+            <Button type="button" onClick={handleSaveRevisedInvoice} className="bg-emerald-600 hover:bg-emerald-700 gap-1.5">
+              <Save className="h-4 w-4" />
+              บันทึกการปรับปรุงบิล (Save Revision)
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ================= MODAL: PAT LETTER ================= */}
       <Dialog open={openPatModal} onOpenChange={setOpenPatModal}>
         <DialogContent className="sm:max-w-[750px] max-h-[90vh] overflow-y-auto">
           <DialogHeader className="print:hidden">
@@ -604,13 +1008,13 @@ export default function InvoicingPage() {
               หนังสือขอเปลี่ยนใบเสร็จรับเงินการท่าเรือแห่งประเทศไทย (PAT Letter)
             </DialogTitle>
             <DialogDescription>
-              จดหมายทางการส่งถึงการท่าเรือฯ เพื่อขอเปลี่ยนชื่อในใบเสร็จเป็นชื่อบริษัทลูกค้า
+              จดหมายทางการส่งถึงผู้อำนวยการแผนกกองคลังการท่าเรือแห่งประเทศไทย
             </DialogDescription>
           </DialogHeader>
 
           {/* Printable Official PAT Letter */}
-          <div className="border-2 border-slate-900 p-8 rounded-lg bg-white text-slate-900 space-y-5 print:border-none print:p-0 font-serif leading-relaxed">
-            {/* Letterhead */}
+          <div className="border border-slate-900 p-8 rounded-lg bg-white text-slate-900 space-y-5 print:border-none print:p-0 font-serif leading-relaxed">
+            {/* Letterhead with Logo */}
             <div className="flex justify-between items-start border-b pb-4">
               <div className="flex items-start gap-4">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -658,7 +1062,7 @@ export default function InvoicingPage() {
             {/* Target Customer Specs */}
             <div className="p-4 bg-slate-50 rounded border text-xs font-sans space-y-2">
               <div className="font-bold text-slate-900 text-sm">
-                {selectedJob?.customer?.company_name} ( สาขาที่ 00001 )
+                {selectedJob?.customer?.company_name} ({selectedJob?.customer?.branch || 'สาขาที่ 00001'})
               </div>
               <div className="text-slate-700">
                 {selectedJob?.customer?.address || 'ที่อยู่ตาม ภ.พ.20'}

@@ -335,23 +335,125 @@ export default function InvoicingPage() {
     alert('✅ คืนค่าเริ่มต้นเรียบร้อยแล้ว');
   };
 
-  // Dedicated Print Handler (Ensures ONLY the document sheet prints cleanly without page background)
-  const handlePrintDocument = () => {
-    if (typeof document !== 'undefined') {
-      document.body.classList.add('is-printing-invoice');
-    }
-    window.print();
-  };
+  // Dedicated Clean Document Printer (Renders full A4 document without modal scrollbars or cutoff)
+  const handlePrintDocument = (elementId: string = 'printable-invoice-sheet') => {
+    if (typeof window === 'undefined' || typeof document === 'undefined') return;
 
-  useEffect(() => {
-    const handleAfterPrint = () => {
-      if (typeof document !== 'undefined') {
-        document.body.classList.remove('is-printing-invoice');
+    const elem = document.getElementById(elementId);
+    if (!elem) {
+      window.print();
+      return;
+    }
+
+    // Clean up any previous print helper frame
+    const existing = document.getElementById('print-clean-iframe');
+    if (existing) existing.remove();
+
+    const iframe = document.createElement('iframe');
+    iframe.id = 'print-clean-iframe';
+    iframe.style.position = 'fixed';
+    iframe.style.right = '0';
+    iframe.style.bottom = '0';
+    iframe.style.width = '0';
+    iframe.style.height = '0';
+    iframe.style.border = '0';
+    iframe.style.visibility = 'hidden';
+    document.body.appendChild(iframe);
+
+    const doc = iframe.contentWindow?.document;
+    if (!doc) {
+      window.print();
+      return;
+    }
+
+    // Capture all CSS stylesheets from parent document for full Tailwind & Geist fonts
+    const styles = Array.from(document.querySelectorAll('link[rel="stylesheet"], style'))
+      .map(el => el.outerHTML)
+      .join('\n');
+
+    doc.open();
+    doc.write(`
+      <!DOCTYPE html>
+      <html lang="th">
+        <head>
+          <meta charset="utf-8" />
+          <title>Connect Transport - พิมพ์เอกสาร</title>
+          ${styles}
+          <style>
+            @page {
+              size: A4 portrait;
+              margin: 8mm 12mm 10mm 12mm;
+            }
+            html, body {
+              background: #ffffff !important;
+              color: #000000 !important;
+              margin: 0 !important;
+              padding: 0 !important;
+              width: 100% !important;
+              font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            }
+            .clean-print-wrapper {
+              width: 100% !important;
+              max-width: 100% !important;
+              margin: 0 !important;
+              padding: 0 !important;
+              background: #ffffff !important;
+              color: #000000 !important;
+            }
+            table {
+              width: 100% !important;
+              border-collapse: collapse !important;
+            }
+            * {
+              -webkit-print-color-adjust: exact !important;
+              print-color-adjust: exact !important;
+              box-sizing: border-box !important;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="clean-print-wrapper space-y-4">
+            ${elem.innerHTML}
+          </div>
+        </body>
+      </html>
+    `);
+    doc.close();
+
+    const triggerPrint = () => {
+      try {
+        iframe.contentWindow?.focus();
+        iframe.contentWindow?.print();
+      } catch (err) {
+        console.error('Print execution error:', err);
       }
     };
-    window.addEventListener('afterprint', handleAfterPrint);
-    return () => window.removeEventListener('afterprint', handleAfterPrint);
-  }, []);
+
+    // Ensure images are fully ready before launching print dialog
+    const imgs = doc.images;
+    if (imgs && imgs.length > 0) {
+      let loaded = 0;
+      const checkAll = () => {
+        loaded++;
+        if (loaded >= imgs.length) {
+          setTimeout(triggerPrint, 100);
+        }
+      };
+      for (let i = 0; i < imgs.length; i++) {
+        if (imgs[i].complete) {
+          loaded++;
+        } else {
+          imgs[i].onload = checkAll;
+          imgs[i].onerror = checkAll;
+        }
+      }
+      if (loaded >= imgs.length) {
+        setTimeout(triggerPrint, 150);
+      }
+    } else {
+      setTimeout(triggerPrint, 200);
+    }
+  };
 
   // Open Invoice Modal
   const handleOpenInvoice = (job: Job) => {
@@ -1328,7 +1430,7 @@ export default function InvoicingPage() {
             <Button type="button" variant="outline" onClick={() => setOpenInvoiceModal(false)}>
               ปิดหน้าต่าง
             </Button>
-            <Button type="button" onClick={handlePrintDocument} className="bg-blue-600 hover:bg-blue-700 gap-2">
+            <Button type="button" onClick={() => handlePrintDocument('printable-invoice-sheet')} className="bg-blue-600 hover:bg-blue-700 gap-2 font-bold shadow-sm">
               <Printer className="h-4 w-4" />
               พิมพ์ใบแจ้งหนี้ (Print Invoice)
             </Button>
@@ -1635,7 +1737,7 @@ export default function InvoicingPage() {
             <Button type="button" variant="outline" onClick={() => setOpenPatModal(false)}>
               ปิดหน้าต่าง
             </Button>
-            <Button type="button" onClick={handlePrintDocument} className="bg-purple-700 hover:bg-purple-800 text-white gap-2">
+            <Button type="button" onClick={() => handlePrintDocument('printable-pat-sheet')} className="bg-purple-700 hover:bg-purple-800 text-white gap-2 font-bold shadow-sm">
               <Printer className="h-4 w-4" />
               พิมพ์จดหมาย PAT Letter
             </Button>

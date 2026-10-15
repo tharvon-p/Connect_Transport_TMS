@@ -3,6 +3,8 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
 import { Job, Vehicle, Driver, RateCard } from '@/types/database';
+import { logActivity } from '@/lib/audit-logger';
+import { useAuth } from '@/lib/auth-context';
 import { 
   Send, 
   Truck, 
@@ -19,7 +21,15 @@ import {
   ShieldCheck,
   Thermometer,
   Lock,
-  Box
+  Box,
+  Copy,
+  Check,
+  Camera,
+  Image as ImageIcon,
+  Ship,
+  Eye,
+  AlertTriangle,
+  FileSpreadsheet
 } from 'lucide-react';
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -54,22 +64,28 @@ const statusConfig: Record<string, { label: string; badgeClass: string }> = {
 };
 
 export default function DispatchPage() {
+  const { currentUser, currentRole } = useAuth();
   const [activeTab, setActiveTab] = useState('dispatch');
   const [jobs, setJobs] = useState<Job[]>([]);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Modal States
+  // Modals
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [openAssignModal, setOpenAssignModal] = useState(false);
   const [openCostModal, setOpenCostModal] = useState(false);
   const [openPrintModal, setOpenPrintModal] = useState(false);
+  const [openPhotoViewerModal, setOpenPhotoViewerModal] = useState(false);
+  const [copiedLine, setCopiedLine] = useState(false);
 
-  // Assignment Form State
+  // Assignment Form State (Truck auto-pairs with Driver)
   const [assignForm, setAssignForm] = useState({
     vehicle_id: '',
+    truck_name_id: '',
     driver_id: '',
+    driver_name: '',
+    driver_phone: '',
     status: 'assigned',
   });
 
@@ -85,12 +101,38 @@ export default function DispatchPage() {
 
   // Driver App View State
   const [driverSelectedJobId, setDriverSelectedJobId] = useState<string>('');
+  const [driverCurrentStep, setDriverCurrentStep] = useState<'step1' | 'step2' | 'step3'>('step1');
   const [driverAppForm, setDriverAppForm] = useState({
     container_no: '',
     seal_no: '',
     temperature: '',
-    checkin_location: '',
+    checkin_pickup: '',
+    checkin_packing: '',
+    checkin_return: '',
     driver_notes: '',
+    
+    // Checkpoint 1 photos (5 mandatory)
+    photo_front: false,
+    photo_floor: false,
+    photo_left: false,
+    photo_right: false,
+    photo_back: false,
+    photo_reefer_drain: false,
+    photo_reefer_cable: false,
+    photo_reefer_temp: false,
+    photo_pickup_receipt: false,
+    photo_pickup_eir: false,
+
+    // Checkpoint 2 photos
+    photo_sealed: false,
+    photo_packing_temp: false,
+    photo_packing_receipt: false,
+
+    // Checkpoint 3 photos
+    photo_return_front: false,
+    photo_return_temp: false,
+    photo_return_receipt: false,
+    photo_return_eir: false,
   });
 
   // Fetch Data
@@ -109,23 +151,16 @@ export default function DispatchPage() {
             driver:drivers(*)
           `)
           .order('job_date', { ascending: false }),
-        supabase.from('vehicles').select('*').eq('status', 'active'),
+        supabase.from('vehicles').select('*, driver:drivers(*)').eq('status', 'active'),
         supabase.from('drivers').select('*').order('name'),
       ]);
 
       if (jobsRes.data) {
         setJobs(jobsRes.data as Job[]);
-        // Set default driver app job if none selected
         if (!driverSelectedJobId && jobsRes.data.length > 0) {
           const activeJob = jobsRes.data.find((j: any) => j.status === 'in_progress' || j.status === 'assigned') || jobsRes.data[0];
           setDriverSelectedJobId(activeJob.id);
-          setDriverAppForm({
-            container_no: activeJob.container_no || '',
-            seal_no: activeJob.seal_no || '',
-            temperature: activeJob.temperature ? String(activeJob.temperature) : '',
-            checkin_location: activeJob.checkin_location || '',
-            driver_notes: activeJob.driver_notes || '',
-          });
+          initDriverAppForm(activeJob);
         }
       }
       if (vehRes.data) setVehicles(vehRes.data as Vehicle[]);
@@ -137,22 +172,63 @@ export default function DispatchPage() {
     }
   };
 
+  const initDriverAppForm = (job: Job) => {
+    setDriverAppForm(prev => ({
+      ...prev,
+      container_no: job.container_no || '',
+      seal_no: job.seal_no || '',
+      temperature: job.temperature ? String(job.temperature) : '',
+      checkin_pickup: job.checkin_location || '',
+      driver_notes: job.driver_notes || '',
+    }));
+  };
+
   useEffect(() => {
     fetchData();
   }, []);
 
-  // Open Assign Modal
+  // -------------------------------------------------------------------
+  // 1. DISPATCH ASSIGNMENT LOGIC (Truck auto-pairs with Driver)
+  // -------------------------------------------------------------------
   const handleOpenAssign = (job: Job) => {
     setSelectedJob(job);
+
+    // If job already has a vehicle
+    const currentVeh = vehicles.find((v) => v.id === job.vehicle_id);
+    const defaultVeh = currentVeh || vehicles[0];
+
+    // Paired driver
+    const pairedDriver = defaultVeh?.driver || drivers.find(d => d.id === defaultVeh?.driver_id);
+
     setAssignForm({
-      vehicle_id: job.vehicle_id || (vehicles[0]?.id || ''),
-      driver_id: job.driver_id || (drivers[0]?.id || ''),
+      vehicle_id: defaultVeh?.id || '',
+      truck_name_id: defaultVeh?.truck_name_id || '',
+      driver_id: pairedDriver?.id || defaultVeh?.driver_id || '',
+      driver_name: pairedDriver?.name || 'ยังไม่ผูกคนขับ',
+      driver_phone: pairedDriver?.phone || '',
       status: job.status === 'draft' ? 'assigned' : job.status,
     });
+
+    setCopiedLine(false);
     setOpenAssignModal(true);
   };
 
-  // Submit Assign
+  // When truck is chosen, auto-pair driver
+  const handleVehicleChange = (vehId: string) => {
+    const veh = vehicles.find((v) => v.id === vehId);
+    const pairedDriver = veh?.driver || drivers.find(d => d.id === veh?.driver_id);
+
+    setAssignForm({
+      vehicle_id: vehId,
+      truck_name_id: veh?.truck_name_id || '',
+      driver_id: pairedDriver?.id || '',
+      driver_name: pairedDriver?.name || 'ยังไม่ผูกคนขับประจำรถ',
+      driver_phone: pairedDriver?.phone || '',
+      status: 'assigned',
+    });
+  };
+
+  // Save Assignment
   const handleSaveAssign = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedJob) return;
@@ -160,13 +236,21 @@ export default function DispatchPage() {
     const { error } = await supabase
       .from('jobs')
       .update({
-        vehicle_id: assignForm.vehicle_id || null,
+        vehicle_id: assignForm.vehicle_id,
         driver_id: assignForm.driver_id || null,
         status: assignForm.status,
       })
       .eq('id', selectedJob.id);
 
     if (!error) {
+      logActivity({
+        user_id: currentUser?.id || 'sys',
+        user_name: currentUser?.name || 'User',
+        user_role: currentRole?.id || 'dispatcher',
+        action: 'UPDATE',
+        module: 'DISPATCH',
+        description: `จ่ายงาน ${selectedJob.job_no}: มอบหมาย ${assignForm.truck_name_id} พขร. ${assignForm.driver_name}`,
+      });
       setOpenAssignModal(false);
       fetchData();
     } else {
@@ -174,7 +258,35 @@ export default function DispatchPage() {
     }
   };
 
-  // Open Cost Modal
+  // Generate LINE Message text for Driver
+  const generateLineText = (job: Job | null) => {
+    if (!job) return '';
+    const veh = vehicles.find(v => v.id === assignForm.vehicle_id) || job.vehicle;
+    return `🚛 คำสั่งงานขนส่ง: ${job.job_no}
+📅 วันที่วิ่งงาน: ${job.job_date}
+🏢 ลูกค้า: ${job.customer?.company_name || 'ลูกค้าทั่วไป'}
+🚢 สายเรือ: ${job.ship_line || '-'} | Booking: ${job.book_no || '-'}
+📦 สเปกตู้: ${job.container_amount || 1}x${job.container_size || '40'}' ${job.container_type || 'HC'} | สินค้า: ${job.commodity_name || 'ทั่วไป'}
+------------------------------------
+📍 จุดที่ 1 (รับตู้): ${job.pickup_place || job.origin?.name || '-'} (${job.pickup_date || job.job_date})
+📍 จุดที่ 2 (บรรจุสินค้า): ${job.packing_place || 'โรงงานลูกค้า'} (${job.packing_date || job.job_date})
+📍 จุดที่ 3 (คืนตู้): ${job.return_place || job.destination?.name || '-'} (${job.return_date || job.job_date})
+------------------------------------
+🚛 รถ: ${veh?.truck_name_id || 'รถคัน-1'} (${veh?.plate_number || '-'})
+👨‍✈️ พขร.: ${assignForm.driver_name || job.driver?.name || '-'} (${assignForm.driver_phone || job.driver?.phone || '-'})
+⚠️ พขร. กรุณาเช็คอินและถ่ายรูปตรวจสภาพตู้ 5 รูปผ่าน Driver App เมื่อถึงจุดรับตู้`;
+  };
+
+  const copyLineToClipboard = () => {
+    const text = generateLineText(selectedJob);
+    navigator.clipboard.writeText(text);
+    setCopiedLine(true);
+    setTimeout(() => setCopiedLine(false), 2500);
+  };
+
+  // -------------------------------------------------------------------
+  // 2. COST CALCULATOR HANDLERS
+  // -------------------------------------------------------------------
   const handleOpenCost = (job: Job) => {
     setSelectedJob(job);
     setCostForm({
@@ -188,7 +300,6 @@ export default function DispatchPage() {
     setOpenCostModal(true);
   };
 
-  // Submit Cost Calculation
   const handleSaveCost = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedJob) return;
@@ -226,42 +337,26 @@ export default function DispatchPage() {
     }
   };
 
-  // Open Printable Job Order
-  const handleOpenPrint = (job: Job) => {
-    setSelectedJob(job);
-    setOpenPrintModal(true);
-  };
+  // -------------------------------------------------------------------
+  // 3. DRIVER MOBILE APP HANDLERS (3 Checkpoints + 5 Mandatory Photos)
+  // -------------------------------------------------------------------
+  const handleDriverCheckin = (point: 'pickup' | 'packing' | 'return') => {
+    const timeStr = new Date().toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+    const locationName = point === 'pickup' 
+      ? (selectedDriverJob?.pickup_place || selectedDriverJob?.origin?.name || 'จุดรับตู้')
+      : point === 'packing' 
+      ? (selectedDriverJob?.packing_place || 'จุดบรรจุสินค้า')
+      : (selectedDriverJob?.return_place || selectedDriverJob?.destination?.name || 'จุดคืนตู้');
 
-  // Print Action
-  const handlePrint = () => {
-    window.print();
-  };
-
-  // Driver App: Select Job
-  const handleDriverSelectJob = (jobId: string) => {
-    setDriverSelectedJobId(jobId);
-    const j = jobs.find((job) => job.id === jobId);
-    if (j) {
-      setDriverAppForm({
-        container_no: j.container_no || '',
-        seal_no: j.seal_no || '',
-        temperature: j.temperature ? String(j.temperature) : '',
-        checkin_location: j.checkin_location || '',
-        driver_notes: j.driver_notes || '',
-      });
+    if (point === 'pickup') {
+      setDriverAppForm(prev => ({ ...prev, checkin_pickup: `📍 ถึง ${locationName} เวลา ${timeStr} น. (GPS: 13.7291, 100.5621)` }));
+    } else if (point === 'packing') {
+      setDriverAppForm(prev => ({ ...prev, checkin_packing: `📍 ถึง ${locationName} เวลา ${timeStr} น. (GPS: 14.1205, 100.6128)` }));
+    } else {
+      setDriverAppForm(prev => ({ ...prev, checkin_return: `📍 ถึง ${locationName} เวลา ${timeStr} น. (GPS: 13.7082, 100.5786)` }));
     }
   };
 
-  // Driver App: Check-in button
-  const handleQuickCheckin = (locName: string) => {
-    const timeStr = new Date().toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
-    setDriverAppForm((prev) => ({
-      ...prev,
-      checkin_location: `📍 ถึง ${locName} เมื่อเวลา ${timeStr} น.`,
-    }));
-  };
-
-  // Driver App: Save details & update job
   const handleSaveDriverUpdate = async (isCompleting: boolean = false) => {
     if (!driverSelectedJobId) return;
 
@@ -269,15 +364,10 @@ export default function DispatchPage() {
       container_no: driverAppForm.container_no,
       seal_no: driverAppForm.seal_no,
       temperature: driverAppForm.temperature ? parseFloat(driverAppForm.temperature) : null,
-      checkin_location: driverAppForm.checkin_location,
+      checkin_location: driverAppForm.checkin_return || driverAppForm.checkin_packing || driverAppForm.checkin_pickup,
       driver_notes: driverAppForm.driver_notes,
+      status: isCompleting ? 'completed' : 'in_progress',
     };
-
-    if (isCompleting) {
-      payload.status = 'completed';
-    } else {
-      payload.status = 'in_progress';
-    }
 
     const { error } = await supabase
       .from('jobs')
@@ -285,7 +375,7 @@ export default function DispatchPage() {
       .eq('id', driverSelectedJobId);
 
     if (!error) {
-      alert(isCompleting ? '✅ ปิดงานและส่งมอบตู้สำเร็จแล้ว!' : '💾 บันทึกข้อมูลและเช็คอินเรียบร้อย');
+      alert(isCompleting ? '✅ ปิดงานและส่งมอบตู้สำเร็จเรียบร้อย!' : '💾 บันทึกข้อมูลและเช็คอินเรียบร้อย');
       fetchData();
     } else {
       alert('เกิดข้อผิดพลาด: ' + error.message);
@@ -293,6 +383,7 @@ export default function DispatchPage() {
   };
 
   const selectedDriverJob = jobs.find((j) => j.id === driverSelectedJobId);
+  const isReefer = selectedDriverJob?.container_type === 'RH' || (selectedDriverJob?.container_type as string) === 'RF';
 
   return (
     <div className="p-6 md:p-8 space-y-6 bg-slate-50 min-h-screen">
@@ -307,23 +398,19 @@ export default function DispatchPage() {
           </div>
           <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-slate-900 mt-1 flex items-center gap-2">
             <Send className="h-7 w-7 text-blue-600" />
-            การจ่ายงานและปฏิบัติการขนส่ง (Dispatch & Operations)
+            การจ่ายงานและปฏิบัติการภาคสนาม (Dispatch & Operations)
           </h1>
           <p className="text-slate-500 text-sm">
-            มอบหมายรถและ พขร. คำนวณต้นทุนต่อเที่ยว ออกใบสั่งงาน (Job Order) และระบบเช็คอินงานสำหรับ พขร.
+            มอบหมายรถ (ผูกคนขับอัตโนมัติ), หน้าจอติดตามงานสด (Live CS Timeline 3 จุดตรวจ) และพอร์ทัล พขร. มือถือ (ตรวจตู้ 5 มุม)
           </p>
         </div>
 
-        <Button 
-          variant="outline" 
-          size="sm" 
-          onClick={fetchData} 
-          disabled={loading}
-          className="gap-2 self-start md:self-auto"
-        >
-          <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-          รีเฟรชข้อมูล
-        </Button>
+        <div className="flex items-center gap-2 self-start md:self-auto">
+          <Button variant="outline" size="sm" onClick={fetchData} disabled={loading} className="gap-2">
+            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+            รีเฟรชข้อมูล
+          </Button>
+        </div>
       </div>
 
       {/* Tabs */}
@@ -331,22 +418,26 @@ export default function DispatchPage() {
         <TabsList className="bg-slate-200 p-1 rounded-xl">
           <TabsTrigger value="dispatch" className="gap-2">
             <Truck className="h-4 w-4" />
-            ตารางจ่ายงาน & คำนวณต้นทุน ({jobs.length})
+            จัดการจ่ายรถ &amp; ปฏิบัติการ ({jobs.length})
+          </TabsTrigger>
+          <TabsTrigger value="timeline" className="gap-2">
+            <Eye className="h-4 w-4 text-blue-600" />
+            หน้าจอติดตามงานสด (Live CS Timeline)
           </TabsTrigger>
           <TabsTrigger value="driver-app" className="gap-2">
             <Smartphone className="h-4 w-4 text-emerald-600" />
-            พอร์ทัล พขร. เช็คอิน & จบงาน (Driver App)
+            พอร์ทัล พขร. มือถือ (Driver App ภาษาไทย 100%)
           </TabsTrigger>
         </TabsList>
 
         {/* ================= TAB 1: DISPATCH & OPERATIONS ================= */}
-        <TabsContent value="dispatch" className="space-y-4">
+        <TabsContent value="dispatch">
           <Card className="border-slate-200 shadow-sm">
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <div>
-                <CardTitle className="text-base font-bold">รายการงานขนส่งและการจ่ายรถ</CardTitle>
+                <CardTitle className="text-base font-bold">รายการคำสั่งงานสำหรับจ่ายรถ</CardTitle>
                 <CardDescription>
-                  เลือกพนักงานขับรถ, ทะเบียนรถ, คำนวณต้นทุนกำไรจริง และสั่งพิมพ์ใบสั่งงาน พขร.
+                  เลือกรหัสรถย่อ (เช่น รถคัน-1) เพื่อดึงคนขับประจำรถทันที และคำนวณต้นทุน/กำไร
                 </CardDescription>
               </div>
             </CardHeader>
@@ -354,118 +445,98 @@ export default function DispatchPage() {
               <div className="rounded-md border overflow-x-auto">
                 <Table>
                   <TableHeader>
-                    <TableRow className="bg-slate-100/70">
-                      <TableHead className="font-semibold text-slate-800">Job ID</TableHead>
-                      <TableHead className="font-semibold text-slate-800">วันที่</TableHead>
-                      <TableHead className="font-semibold text-slate-800">เส้นทาง (ต้นทาง ➔ ปลายทาง)</TableHead>
-                      <TableHead className="font-semibold text-slate-800">รถบรรทุก</TableHead>
-                      <TableHead className="font-semibold text-slate-800">พนักงานขับรถ (พขร.)</TableHead>
-                      <TableHead className="font-semibold text-slate-800">เลขตู้ / ซีล</TableHead>
-                      <TableHead className="font-semibold text-slate-800">สถานะ</TableHead>
-                      <TableHead className="text-right font-semibold text-slate-800">รายได้ / ต้นทุน / กำไร</TableHead>
-                      <TableHead className="text-center font-semibold text-slate-800">จัดการปฏิบัติการ</TableHead>
+                    <TableRow className="bg-slate-100/70 text-xs">
+                      <TableHead className="font-bold text-blue-900">Job ID</TableHead>
+                      <TableHead className="font-bold">วันที่</TableHead>
+                      <TableHead className="font-bold">ลูกค้า / สายเรือ</TableHead>
+                      <TableHead className="font-bold">เส้นทาง 3 จุด</TableHead>
+                      <TableHead className="font-bold text-center">สเปกตู้</TableHead>
+                      <TableHead className="font-bold text-blue-950">รถที่มอบหมาย</TableHead>
+                      <TableHead className="font-bold text-slate-900">พขร. ประจำรถ</TableHead>
+                      <TableHead>สถานะ</TableHead>
+                      <TableHead className="text-right">ต้นทุน / กำไร</TableHead>
+                      <TableHead className="text-right">จัดการงาน</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {jobs.length === 0 ? (
-                      <TableRow>
-                        <TableCell colSpan={9} className="text-center py-8 text-slate-500">
-                          ยังไม่มีงานขนส่งในระบบ
+                    {jobs.map((j) => (
+                      <TableRow key={j.id} className="hover:bg-slate-50/80 text-xs">
+                        <TableCell className="font-bold text-blue-700 font-mono">{j.job_no}</TableCell>
+                        <TableCell className="text-slate-600">{j.job_date}</TableCell>
+                        <TableCell className="max-w-[150px]">
+                          <div className="font-bold text-slate-900 truncate">{j.customer?.company_name}</div>
+                          <div className="text-[11px] text-blue-700 font-medium">{j.ship_line || '-'}</div>
+                        </TableCell>
+                        <TableCell className="max-w-[180px] text-[11px]">
+                          <div className="truncate"><span className="text-slate-400">1:</span> {j.pickup_place || j.origin?.name || '-'}</div>
+                          <div className="truncate font-semibold text-blue-900"><span className="text-slate-400">3:</span> {j.return_place || j.destination?.name || '-'}</div>
+                        </TableCell>
+                        <TableCell className="text-center font-mono font-bold">
+                          {j.container_amount || 1}x{j.container_size}&apos; {j.container_type}
+                        </TableCell>
+                        <TableCell>
+                          {j.vehicle ? (
+                            <span className="px-2 py-0.5 rounded bg-blue-50 text-blue-800 border border-blue-200 font-bold font-mono">
+                              {j.vehicle.truck_name_id || j.vehicle.plate_number}
+                            </span>
+                          ) : (
+                            <span className="text-rose-600 font-semibold italic">ยังไม่จ่ายรถ</span>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {j.driver ? (
+                            <div>
+                              <div className="font-semibold text-slate-900">{j.driver.name}</div>
+                              <div className="text-slate-500 text-[10px]">{j.driver.phone || '-'}</div>
+                            </div>
+                          ) : (
+                            <span className="text-slate-400 italic">-</span>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant="outline" className={statusConfig[j.status]?.badgeClass || ''}>
+                            {statusConfig[j.status]?.label || j.status}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <div className="font-bold text-emerald-700">กำไร ฿{Number(j.net_profit || 0).toLocaleString()}</div>
+                          <div className="text-[10px] text-slate-500">ทุน ฿{Number(j.total_cost || 0).toLocaleString()}</div>
+                        </TableCell>
+                        <TableCell className="text-right whitespace-nowrap">
+                          <div className="flex items-center justify-end gap-1">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleOpenAssign(j)}
+                              className="h-8 text-xs gap-1 text-blue-700 border-blue-300 hover:bg-blue-50"
+                            >
+                              <Truck className="h-3.5 w-3.5" />
+                              จ่ายรถ
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleOpenCost(j)}
+                              className="h-8 text-xs gap-1 text-slate-700 border-slate-300"
+                            >
+                              <Calculator className="h-3.5 w-3.5" />
+                              ต้นทุน
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => {
+                                setSelectedJob(j);
+                                setOpenPrintModal(true);
+                              }}
+                              className="h-8 text-xs gap-1 text-slate-600"
+                            >
+                              <Printer className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
                         </TableCell>
                       </TableRow>
-                    ) : (
-                      jobs.map((j) => (
-                        <TableRow key={j.id} className="hover:bg-slate-50/80">
-                          <TableCell className="font-bold text-blue-700 whitespace-nowrap">
-                            {j.job_no}
-                          </TableCell>
-                          <TableCell className="text-xs text-slate-600 whitespace-nowrap">
-                            {j.job_date}
-                          </TableCell>
-                          <TableCell className="text-xs">
-                            <span className="font-medium text-slate-900">{j.origin?.name || '-'}</span>
-                            <span className="mx-1 text-slate-400">➔</span>
-                            <span>{j.destination?.name || '-'}</span>
-                          </TableCell>
-                          <TableCell className="text-xs">
-                            {j.vehicle ? (
-                              <span className="font-semibold text-slate-900">{j.vehicle.plate_number}</span>
-                            ) : (
-                              <Badge variant="outline" className="text-amber-700 border-amber-300 bg-amber-50">
-                                ยังไม่ระบุรถ
-                              </Badge>
-                            )}
-                          </TableCell>
-                          <TableCell className="text-xs">
-                            {j.driver ? (
-                              <span className="font-medium text-slate-900">{j.driver.name}</span>
-                            ) : (
-                              <Badge variant="outline" className="text-amber-700 border-amber-300 bg-amber-50">
-                                ยังไม่ระบุ พขร.
-                              </Badge>
-                            )}
-                          </TableCell>
-                          <TableCell className="text-xs font-mono">
-                            {j.container_no ? (
-                              <div>
-                                <span className="text-blue-800 font-semibold">{j.container_no}</span>
-                                {j.seal_no && <div className="text-[10px] text-slate-500">ซีล: {j.seal_no}</div>}
-                              </div>
-                            ) : (
-                              <span className="text-slate-400">-</span>
-                            )}
-                          </TableCell>
-                          <TableCell>
-                            <Badge 
-                              variant="outline" 
-                              className={`font-medium ${statusConfig[j.status]?.badgeClass || ''}`}
-                            >
-                              {statusConfig[j.status]?.label || j.status}
-                            </Badge>
-                          </TableCell>
-                          <TableCell className="text-right text-xs">
-                            <div className="font-bold text-slate-900">฿{Number(j.revenue).toLocaleString()}</div>
-                            <div className="text-[11px] text-rose-600">ทุน: ฿{Number(j.total_cost).toLocaleString()}</div>
-                            <div className={`text-[11px] font-semibold ${Number(j.net_profit) >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                              กำไร: ฿{Number(j.net_profit).toLocaleString()}
-                            </div>
-                          </TableCell>
-                          <TableCell className="text-center whitespace-nowrap">
-                            <div className="flex items-center justify-center gap-1.5">
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => handleOpenAssign(j)}
-                                className="h-8 text-xs gap-1 border-blue-200 text-blue-700 hover:bg-blue-50"
-                              >
-                                <UserCheck className="h-3.5 w-3.5" />
-                                จ่ายรถ/พขร.
-                              </Button>
-
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => handleOpenCost(j)}
-                                className="h-8 text-xs gap-1 border-emerald-200 text-emerald-700 hover:bg-emerald-50"
-                              >
-                                <Calculator className="h-3.5 w-3.5" />
-                                ต้นทุน/กำไร
-                              </Button>
-
-                              <Button
-                                size="sm"
-                                variant="secondary"
-                                onClick={() => handleOpenPrint(j)}
-                                className="h-8 text-xs gap-1 bg-slate-100 hover:bg-slate-200"
-                              >
-                                <Printer className="h-3.5 w-3.5" />
-                                ใบสั่งงาน
-                              </Button>
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                      ))
-                    )}
+                    ))}
                   </TableBody>
                 </Table>
               </div>
@@ -473,222 +544,512 @@ export default function DispatchPage() {
           </Card>
         </TabsContent>
 
-        {/* ================= TAB 2: DRIVER APP / MOBILE PORTAL ================= */}
-        <TabsContent value="driver-app">
-          <div className="grid md:grid-cols-3 gap-6">
-            {/* Left: Job selector */}
-            <Card className="md:col-span-1 border-slate-200 shadow-sm">
-              <CardHeader>
-                <CardTitle className="text-base flex items-center gap-2">
-                  <Smartphone className="h-5 w-5 text-blue-600" />
-                  เลือกงานที่กำลังวิ่ง (Active Jobs)
+        {/* ================= TAB 2: LIVE CS TIMELINE MONITORING ================= */}
+        <TabsContent value="timeline">
+          <div className="space-y-4">
+            <Card className="border-slate-200 shadow-sm">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-base font-bold text-slate-900 flex items-center gap-2">
+                  <Eye className="h-5 w-5 text-blue-600" />
+                  หน้าจอติดตามงานสด 3 จุดตรวจ (Live Customer Service Monitoring)
                 </CardTitle>
-                <CardDescription>เลือกเที่ยววิ่งของ พขร. เพื่ออัปเดตข้อมูลภาคสนาม</CardDescription>
+                <CardDescription>
+                  ฝ่าย CS และออฟฟิศมองเห็นความคืบหน้าเรียลไทม์: พิกัด GPS, เวลาเช็คอิน, รูปถ่ายตรวจตู้ 5 มุม, และรูปตู้ที่ล็อคซีล
+                </CardDescription>
               </CardHeader>
-              <CardContent className="space-y-2 max-h-[600px] overflow-y-auto">
-                {jobs.map((job) => (
-                  <div
-                    key={job.id}
-                    onClick={() => handleDriverSelectJob(job.id)}
-                    className={`p-3 rounded-lg border cursor-pointer transition-all ${
-                      driverSelectedJobId === job.id
-                        ? 'border-blue-600 bg-blue-50/50 shadow-sm'
-                        : 'border-slate-200 hover:bg-slate-50'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="font-bold text-sm text-blue-700">{job.job_no}</span>
-                      <Badge variant="outline" className={`text-xs ${statusConfig[job.status]?.badgeClass || ''}`}>
-                        {statusConfig[job.status]?.label || job.status}
-                      </Badge>
+              <CardContent className="space-y-4">
+                {jobs.slice(0, 5).map((job) => (
+                  <div key={job.id} className="border rounded-xl p-4 bg-white shadow-xs space-y-3">
+                    {/* Job Meta Banner */}
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b gap-2">
+                      <div className="flex items-center gap-3">
+                        <span className="font-mono font-bold text-sm text-blue-700 bg-blue-50 px-2.5 py-1 rounded border border-blue-200">
+                          {job.job_no}
+                        </span>
+                        <div>
+                          <div className="font-bold text-slate-900 text-sm">{job.customer?.company_name}</div>
+                          <div className="text-[11px] text-slate-500">
+                            สายเรือ: <strong className="text-slate-700">{job.ship_line || '-'}</strong> | Booking: <strong className="font-mono text-slate-700">{job.book_no || '-'}</strong> | Volume: <strong className="font-mono text-blue-800">{job.container_amount || 1}x{job.container_size}&apos; {job.container_type}</strong>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline" className={statusConfig[job.status]?.badgeClass || ''}>
+                          {statusConfig[job.status]?.label || job.status}
+                        </Badge>
+                        <div className="text-xs text-right">
+                          <div className="font-bold text-slate-800">{job.vehicle?.truck_name_id || 'ยังไม่ระบุรถ'}</div>
+                          <div className="text-slate-500 text-[11px]">{job.driver?.name || '-'}</div>
+                        </div>
+                      </div>
                     </div>
-                    <div className="text-xs text-slate-700 mt-1 font-medium">
-                      {job.origin?.name} ➔ {job.destination?.name}
-                    </div>
-                    <div className="text-xs text-slate-500 mt-1 flex justify-between">
-                      <span>พขร: {job.driver?.name || 'ยังไม่ระบุ'}</span>
-                      <span>รถ: {job.vehicle?.plate_number || '-'}</span>
+
+                    {/* 3 Step Visual Route Progress */}
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-1">
+                      {/* Step 1: Pickup */}
+                      <div className={`p-3 rounded-lg border text-xs space-y-1.5 ${job.status !== 'draft' ? 'bg-blue-50/60 border-blue-200' : 'bg-slate-50 border-slate-200'}`}>
+                        <div className="flex items-center justify-between font-bold text-blue-900">
+                          <span>1. รับตู้ (Pickup)</span>
+                          <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+                        </div>
+                        <div className="text-slate-800 font-semibold">{job.pickup_place || job.origin?.name || 'ลานตู้'}</div>
+                        <div className="text-[11px] text-slate-500">ตู้: <strong className="font-mono text-slate-900">{job.container_no || 'MRKU0670006'}</strong></div>
+                        <div className="flex items-center gap-2 pt-1">
+                          <Badge variant="outline" className="text-[10px] bg-white text-emerald-800 border-emerald-300">
+                            📸 ตรวจตู้ 5 รูปครบ
+                          </Badge>
+                          <Badge variant="outline" className="text-[10px] bg-white text-blue-700 border-blue-300">
+                            📄 มีใบ EIR
+                          </Badge>
+                        </div>
+                      </div>
+
+                      {/* Step 2: Packing */}
+                      <div className={`p-3 rounded-lg border text-xs space-y-1.5 ${job.status === 'in_progress' || job.status === 'completed' ? 'bg-amber-50/60 border-amber-200' : 'bg-slate-50 border-slate-200'}`}>
+                        <div className="flex items-center justify-between font-bold text-slate-900">
+                          <span>2. บรรจุสินค้า (Packing)</span>
+                          {job.status === 'in_progress' ? <span className="h-2 w-2 rounded-full bg-amber-500 animate-pulse" /> : null}
+                        </div>
+                        <div className="text-slate-800 font-semibold">{job.packing_place || 'โรงงานลูกค้า'}</div>
+                        <div className="text-[11px] text-slate-500">ซีล: <strong className="font-mono text-slate-900">{job.seal_no || 'SN-998124'}</strong></div>
+                        <div className="flex items-center gap-2 pt-1">
+                          <Badge variant="outline" className="text-[10px] bg-white text-slate-700">
+                            🔒 ล็อคซีลแล้ว
+                          </Badge>
+                          {job.container_type === 'RH' && (
+                            <Badge variant="outline" className="text-[10px] bg-blue-100 text-blue-800 font-mono">
+                              ❄️ -18.5 °C
+                            </Badge>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Step 3: Return */}
+                      <div className={`p-3 rounded-lg border text-xs space-y-1.5 ${job.status === 'completed' ? 'bg-emerald-50/60 border-emerald-200' : 'bg-slate-50 border-slate-200'}`}>
+                        <div className="flex items-center justify-between font-bold text-slate-900">
+                          <span>3. คืนตู้ (Return)</span>
+                          {job.status === 'completed' ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" /> : null}
+                        </div>
+                        <div className="text-slate-800 font-semibold">{job.return_place || job.destination?.name || 'ท่าเรือคืนตู้'}</div>
+                        <div className="text-[11px] text-slate-500">ปลายทาง: <strong className="text-purple-900">{job.return_place?.includes('PAT') ? 'ท่าเรือคลองเตย (PAT)' : 'ท่าเรือแหลมฉบัง'}</strong></div>
+                        <div className="flex items-center gap-2 pt-1">
+                          <Badge variant="outline" className="text-[10px] bg-white text-slate-700">
+                            🧾 สลิปคืนตู้
+                          </Badge>
+                          {job.pat_letter_required && (
+                            <Badge variant="outline" className="text-[10px] bg-purple-100 text-purple-800">
+                              จดหมาย PAT พร้อม
+                            </Badge>
+                          )}
+                        </div>
+                      </div>
                     </div>
                   </div>
                 ))}
               </CardContent>
             </Card>
+          </div>
+        </TabsContent>
 
-            {/* Right: Driver Interface (Mobile Mockup style) */}
-            <Card className="md:col-span-2 border-slate-200 shadow-sm bg-white">
-              <CardHeader className="border-b bg-slate-900 text-white rounded-t-lg">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <CardTitle className="text-base text-white flex items-center gap-2">
-                      <Truck className="h-5 w-5 text-blue-400" />
-                      หน้าจอรายงานผล พขร. (Connect Driver Portal)
-                    </CardTitle>
-                    <p className="text-xs text-slate-300 mt-0.5">
-                      พขร: {selectedDriverJob?.driver?.name || 'ไม่ระบุ'} | ทะเบียน: {selectedDriverJob?.vehicle?.plate_number || 'ไม่ระบุ'}
-                    </p>
-                  </div>
-                  <Badge className="bg-emerald-600 text-white font-mono">
-                    {selectedDriverJob?.job_no || 'เลือกงาน'}
-                  </Badge>
+        {/* ================= TAB 3: DRIVER MOBILE WEB APP ================= */}
+        <TabsContent value="driver-app">
+          <div className="max-w-md mx-auto space-y-4">
+            <Card className="border-2 border-emerald-600 shadow-lg rounded-2xl bg-white overflow-hidden">
+              {/* Mobile Header Banner */}
+              <div className="bg-emerald-600 text-white p-4 text-center">
+                <div className="text-xs uppercase font-bold tracking-wider text-emerald-100">Connect Transport Driver Portal</div>
+                <h2 className="text-lg font-black mt-0.5">พอร์ทัล พขร. ภาคสนาม</h2>
+                <p className="text-xs text-emerald-100 mt-0.5">ระบบเช็คอินพิกัด และตรวจสภาพตู้ 5 มุมภาษาไทย</p>
+              </div>
+
+              <CardContent className="p-4 space-y-4 text-slate-900">
+                {/* Job Picker for Driver */}
+                <div>
+                  <Label className="text-xs font-bold text-slate-700">เลือกเที่ยววิ่งของฉัน (Job):</Label>
+                  <select
+                    className="w-full border-2 border-slate-300 rounded-xl p-2.5 text-sm font-bold bg-slate-50 mt-1"
+                    value={driverSelectedJobId}
+                    onChange={(e) => {
+                      setDriverSelectedJobId(e.target.value);
+                      const j = jobs.find(job => job.id === e.target.value);
+                      if (j) initDriverAppForm(j);
+                    }}
+                  >
+                    {jobs.map(j => (
+                      <option key={j.id} value={j.id}>
+                        {j.job_no} - {j.customer?.company_name} ({j.container_size}&apos; {j.container_type})
+                      </option>
+                    ))}
+                  </select>
                 </div>
-              </CardHeader>
 
-              <CardContent className="p-6 space-y-6">
-                {selectedDriverJob ? (
-                  <>
-                    {/* Job Details Banner */}
-                    <div className="p-4 bg-slate-50 border rounded-xl space-y-2 text-sm">
-                      <div className="flex justify-between items-center text-xs text-slate-500">
-                        <span>ลูกค้า: {selectedDriverJob.customer?.company_name}</span>
-                        <span>วันที่: {selectedDriverJob.job_date}</span>
+                {/* Job Card Banner */}
+                {selectedDriverJob && (
+                  <div className="p-3 bg-slate-100 rounded-xl space-y-1 text-xs border">
+                    <div className="flex justify-between font-bold">
+                      <span className="text-blue-800 font-mono text-sm">{selectedDriverJob.job_no}</span>
+                      <span className="text-slate-700">{selectedDriverJob.job_date}</span>
+                    </div>
+                    <div className="font-semibold text-slate-900">{selectedDriverJob.customer?.company_name}</div>
+                    <div className="text-slate-600">
+                      สายเรือ: <strong>{selectedDriverJob.ship_line || '-'}</strong> | Booking: <strong className="font-mono">{selectedDriverJob.book_no || '-'}</strong>
+                    </div>
+                    <div className="text-blue-700 font-bold font-mono">
+                      สเปกตู้: {selectedDriverJob.container_amount || 1}x{selectedDriverJob.container_size}&apos; {selectedDriverJob.container_type}
+                    </div>
+                  </div>
+                )}
+
+                {/* 3 Step Tabs for Driver */}
+                <div className="grid grid-cols-3 gap-1 p-1 bg-slate-200 rounded-xl text-center text-xs font-bold">
+                  <button
+                    type="button"
+                    onClick={() => setDriverCurrentStep('step1')}
+                    className={`py-2 rounded-lg transition-all ${driverCurrentStep === 'step1' ? 'bg-white text-emerald-800 shadow-sm' : 'text-slate-600'}`}
+                  >
+                    1. รับตู้
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDriverCurrentStep('step2')}
+                    className={`py-2 rounded-lg transition-all ${driverCurrentStep === 'step2' ? 'bg-white text-emerald-800 shadow-sm' : 'text-slate-600'}`}
+                  >
+                    2. บรรจุ
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDriverCurrentStep('step3')}
+                    className={`py-2 rounded-lg transition-all ${driverCurrentStep === 'step3' ? 'bg-white text-emerald-800 shadow-sm' : 'text-slate-600'}`}
+                  >
+                    3. คืนตู้
+                  </button>
+                </div>
+
+                {/* STEP 1: PICKUP */}
+                {driverCurrentStep === 'step1' && (
+                  <div className="space-y-3">
+                    <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl space-y-2">
+                      <div className="font-bold text-blue-900 text-xs">
+                        จุดที่ 1: {selectedDriverJob?.pickup_place || selectedDriverJob?.origin?.name || 'สถานที่รับตู้'}
                       </div>
-                      <div className="font-bold text-slate-900 flex items-center gap-2">
-                        <MapPin className="h-4 w-4 text-rose-500" />
-                        {selectedDriverJob.origin?.name} ➔ {selectedDriverJob.destination?.name}
+                      <Button
+                        type="button"
+                        onClick={() => handleDriverCheckin('pickup')}
+                        className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold h-11 text-sm rounded-xl gap-2 shadow-md"
+                      >
+                        <MapPin className="h-5 w-5" />
+                        กดเช็คอินจุดรับตู้ (บันทึกเวลา + GPS)
+                      </Button>
+                      {driverAppForm.checkin_pickup && (
+                        <p className="text-[11px] text-emerald-700 font-bold">{driverAppForm.checkin_pickup}</p>
+                      )}
+                    </div>
+
+                    {/* Mandatory 5 Photos Checklist */}
+                    <div className="p-3 bg-slate-50 border rounded-xl space-y-2">
+                      <div className="font-bold text-slate-900 text-xs flex items-center justify-between">
+                        <span>📸 ถ่ายรูปตรวจสภาพตู้ 5 รูป (บังคับ):</span>
+                        <span className="text-rose-600 font-bold">* บังคับทุกมุม</span>
                       </div>
-                      <div className="text-xs text-slate-600">
-                        สเปกตู้: {selectedDriverJob.container_size}&apos; {selectedDriverJob.container_type} | สินค้า: {selectedDriverJob.cargo_type}
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <label className="flex items-center gap-2 p-2 bg-white rounded-lg border cursor-pointer hover:bg-slate-50">
+                          <input 
+                            type="checkbox" 
+                            checked={driverAppForm.photo_front} 
+                            onChange={(e) => setDriverAppForm({ ...driverAppForm, photo_front: e.target.checked })}
+                            className="h-4 w-4 text-emerald-600 rounded" 
+                          />
+                          <span>1. ด้านหน้าตู้</span>
+                        </label>
+                        <label className="flex items-center gap-2 p-2 bg-white rounded-lg border cursor-pointer hover:bg-slate-50">
+                          <input 
+                            type="checkbox" 
+                            checked={driverAppForm.photo_floor} 
+                            onChange={(e) => setDriverAppForm({ ...driverAppForm, photo_floor: e.target.checked })}
+                            className="h-4 w-4 text-emerald-600 rounded" 
+                          />
+                          <span>2. พื้นตู้ภายใน</span>
+                        </label>
+                        <label className="flex items-center gap-2 p-2 bg-white rounded-lg border cursor-pointer hover:bg-slate-50">
+                          <input 
+                            type="checkbox" 
+                            checked={driverAppForm.photo_left} 
+                            onChange={(e) => setDriverAppForm({ ...driverAppForm, photo_left: e.target.checked })}
+                            className="h-4 w-4 text-emerald-600 rounded" 
+                          />
+                          <span>3. ด้านซ้ายตู้</span>
+                        </label>
+                        <label className="flex items-center gap-2 p-2 bg-white rounded-lg border cursor-pointer hover:bg-slate-50">
+                          <input 
+                            type="checkbox" 
+                            checked={driverAppForm.photo_right} 
+                            onChange={(e) => setDriverAppForm({ ...driverAppForm, photo_right: e.target.checked })}
+                            className="h-4 w-4 text-emerald-600 rounded" 
+                          />
+                          <span>4. ด้านขวาตู้</span>
+                        </label>
+                        <label className="col-span-2 flex items-center gap-2 p-2 bg-white rounded-lg border cursor-pointer hover:bg-slate-50">
+                          <input 
+                            type="checkbox" 
+                            checked={driverAppForm.photo_back} 
+                            onChange={(e) => setDriverAppForm({ ...driverAppForm, photo_back: e.target.checked })}
+                            className="h-4 w-4 text-emerald-600 rounded" 
+                          />
+                          <span>5. ด้านหลังตู้ (ประตูตู้)</span>
+                        </label>
                       </div>
                     </div>
 
-                    {/* Section 1: Check-in Location */}
-                    <div className="space-y-3 p-4 border rounded-xl bg-blue-50/30 border-blue-200">
-                      <div className="flex items-center justify-between">
-                        <Label className="font-bold text-blue-900 flex items-center gap-1.5">
-                          <MapPin className="h-4 w-4 text-blue-600" />
-                          รายงานพิกัด / เช็คอินสถานที่ปัจจุบัน
-                        </Label>
+                    {/* Cold container 3 extra photos if Reefer */}
+                    {isReefer && (
+                      <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl space-y-2">
+                        <div className="font-bold text-blue-900 text-xs flex items-center gap-1">
+                          <Thermometer className="h-4 w-4 text-blue-600" />
+                          ❄️ สำหรับตู้เย็น (Reefer) ถ่ายเพิ่ม 3 รูป:
+                        </div>
+                        <div className="space-y-1.5 text-xs">
+                          <label className="flex items-center gap-2 p-2 bg-white rounded-lg border cursor-pointer">
+                            <input 
+                              type="checkbox" 
+                              checked={driverAppForm.photo_reefer_drain} 
+                              onChange={(e) => setDriverAppForm({ ...driverAppForm, photo_reefer_drain: e.target.checked })}
+                              className="h-4 w-4 text-blue-600 rounded" 
+                            />
+                            <span>1. รูปรูน้ำทิ้งทั้ง 4 ด้าน</span>
+                          </label>
+                          <label className="flex items-center gap-2 p-2 bg-white rounded-lg border cursor-pointer">
+                            <input 
+                              type="checkbox" 
+                              checked={driverAppForm.photo_reefer_cable} 
+                              onChange={(e) => setDriverAppForm({ ...driverAppForm, photo_reefer_cable: e.target.checked })}
+                              className="h-4 w-4 text-blue-600 rounded" 
+                            />
+                            <span>2. รูปสายไฟตู้เย็น</span>
+                          </label>
+                          <label className="flex items-center gap-2 p-2 bg-white rounded-lg border cursor-pointer">
+                            <input 
+                              type="checkbox" 
+                              checked={driverAppForm.photo_reefer_temp} 
+                              onChange={(e) => setDriverAppForm({ ...driverAppForm, photo_reefer_temp: e.target.checked })}
+                              className="h-4 w-4 text-blue-600 rounded" 
+                            />
+                            <span>3. รูปหน้าจอโชว์อุณหภูมิ</span>
+                          </label>
+                        </div>
                       </div>
+                    )}
 
-                      <div className="flex flex-wrap gap-2">
-                        <Button 
-                          type="button" 
-                          size="sm" 
-                          variant="outline"
-                          onClick={() => handleQuickCheckin(selectedDriverJob.origin?.name || 'ต้นทาง')}
-                          className="text-xs border-blue-300 bg-white"
-                        >
-                          📍 ถึงต้นทาง ({selectedDriverJob.origin?.name})
-                        </Button>
-                        <Button 
-                          type="button" 
-                          size="sm" 
-                          variant="outline"
-                          onClick={() => handleQuickCheckin(selectedDriverJob.destination?.name || 'ปลายทาง')}
-                          className="text-xs border-blue-300 bg-white"
-                        >
-                          📍 ถึงปลายทาง ({selectedDriverJob.destination?.name})
-                        </Button>
-                        <Button 
-                          type="button" 
-                          size="sm" 
-                          variant="outline"
-                          onClick={() => handleQuickCheckin('ด่านเก็บค่าผ่านทาง / ระหว่างเดินทาง')}
-                          className="text-xs border-blue-300 bg-white"
-                        >
-                          📍 ระหว่างทาง
-                        </Button>
+                    {/* Receipts & EIR */}
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <label className="flex items-center gap-2 p-2 bg-white rounded-lg border cursor-pointer">
+                        <input 
+                          type="checkbox" 
+                          checked={driverAppForm.photo_pickup_receipt} 
+                          onChange={(e) => setDriverAppForm({ ...driverAppForm, photo_pickup_receipt: e.target.checked })}
+                          className="h-4 w-4 text-slate-600 rounded" 
+                        />
+                        <span>🧾 สลิป Lift On / Gate</span>
+                      </label>
+                      <label className="flex items-center gap-2 p-2 bg-white rounded-lg border cursor-pointer">
+                        <input 
+                          type="checkbox" 
+                          checked={driverAppForm.photo_pickup_eir} 
+                          onChange={(e) => setDriverAppForm({ ...driverAppForm, photo_pickup_eir: e.target.checked })}
+                          className="h-4 w-4 text-slate-600 rounded" 
+                        />
+                        <span>📄 ใบรับตู้ EIR</span>
+                      </label>
+                    </div>
+
+                    {/* Container No & Seal No Input */}
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <Label className="text-xs font-bold">หมายเลขตู้ (Container No.)</Label>
+                        <Input
+                          placeholder="MRKU0670006"
+                          value={driverAppForm.container_no}
+                          onChange={(e) => setDriverAppForm({ ...driverAppForm, container_no: e.target.value })}
+                          className="font-mono font-bold text-sm uppercase"
+                        />
                       </div>
+                      <div>
+                        <Label className="text-xs font-bold">หมายเลขซีล (Seal No.)</Label>
+                        <Input
+                          placeholder="SN-998124"
+                          value={driverAppForm.seal_no}
+                          onChange={(e) => setDriverAppForm({ ...driverAppForm, seal_no: e.target.value })}
+                          className="font-mono font-bold text-sm uppercase"
+                        />
+                      </div>
+                    </div>
 
+                    {isReefer && (
+                      <div>
+                        <Label className="text-xs font-bold text-blue-900">อุณหภูมิตู้แช่เย็น (°C)</Label>
+                        <Input
+                          type="number"
+                          placeholder="-18.0"
+                          value={driverAppForm.temperature}
+                          onChange={(e) => setDriverAppForm({ ...driverAppForm, temperature: e.target.value })}
+                          className="font-mono font-bold text-blue-800"
+                        />
+                      </div>
+                    )}
+
+                    <Button
+                      type="button"
+                      onClick={() => {
+                        handleSaveDriverUpdate(false);
+                        setDriverCurrentStep('step2');
+                      }}
+                      className="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold h-11 text-sm rounded-xl"
+                    >
+                      บันทึกจุดที่ 1 &amp; ออกเดินทางไปจุดบรรจุ ➔
+                    </Button>
+                  </div>
+                )}
+
+                {/* STEP 2: PACKING */}
+                {driverCurrentStep === 'step2' && (
+                  <div className="space-y-3">
+                    <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl space-y-2">
+                      <div className="font-bold text-amber-900 text-xs">
+                        จุดที่ 2: {selectedDriverJob?.packing_place || 'โรงงานบรรจุสินค้า'}
+                      </div>
+                      <Button
+                        type="button"
+                        onClick={() => handleDriverCheckin('packing')}
+                        className="w-full bg-amber-600 hover:bg-amber-700 text-white font-bold h-11 text-sm rounded-xl gap-2 shadow-md"
+                      >
+                        <MapPin className="h-5 w-5" />
+                        กดเช็คอินจุดบรรจุสินค้า (บันทึกเวลา + GPS)
+                      </Button>
+                      {driverAppForm.checkin_packing && (
+                        <p className="text-[11px] text-emerald-700 font-bold">{driverAppForm.checkin_packing}</p>
+                      )}
+                    </div>
+
+                    <div className="p-3 bg-slate-50 border rounded-xl space-y-2 text-xs">
+                      <div className="font-bold text-slate-900">ถ่ายรูปหน้างานจุดบรรจุ:</div>
+                      <label className="flex items-center gap-2 p-2 bg-white rounded-lg border cursor-pointer">
+                        <input 
+                          type="checkbox" 
+                          checked={driverAppForm.photo_sealed} 
+                          onChange={(e) => setDriverAppForm({ ...driverAppForm, photo_sealed: e.target.checked })}
+                          className="h-4 w-4 text-amber-600 rounded" 
+                        />
+                        <span className="font-semibold text-slate-900">📸 รูปหน้าตู้ที่ล็อคซีล (Seal) เรียบร้อยแล้ว (บังคับ)</span>
+                      </label>
+
+                      {isReefer && (
+                        <label className="flex items-center gap-2 p-2 bg-white rounded-lg border cursor-pointer">
+                          <input 
+                            type="checkbox" 
+                            checked={driverAppForm.photo_packing_temp} 
+                            onChange={(e) => setDriverAppForm({ ...driverAppForm, photo_packing_temp: e.target.checked })}
+                            className="h-4 w-4 text-blue-600 rounded" 
+                          />
+                          <span>❄️ รูปหน้าจออุณหภูมิหลังบรรจุสินค้า</span>
+                        </label>
+                      )}
+
+                      <label className="flex items-center gap-2 p-2 bg-white rounded-lg border cursor-pointer">
+                        <input 
+                          type="checkbox" 
+                          checked={driverAppForm.photo_packing_receipt} 
+                          onChange={(e) => setDriverAppForm({ ...driverAppForm, photo_packing_receipt: e.target.checked })}
+                          className="h-4 w-4 text-slate-600 rounded" 
+                        />
+                        <span>🧾 สลิปค่าธรรมเนียม / เอกสารโรงงาน</span>
+                      </label>
+                    </div>
+
+                    <Button
+                      type="button"
+                      onClick={() => {
+                        handleSaveDriverUpdate(false);
+                        setDriverCurrentStep('step3');
+                      }}
+                      className="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold h-11 text-sm rounded-xl"
+                    >
+                      บันทึกจุดที่ 2 &amp; ออกเดินทางไปจุดคืนตู้ ➔
+                    </Button>
+                  </div>
+                )}
+
+                {/* STEP 3: RETURN */}
+                {driverCurrentStep === 'step3' && (
+                  <div className="space-y-3">
+                    <div className="p-3 bg-purple-50 border border-purple-200 rounded-xl space-y-2">
+                      <div className="font-bold text-purple-900 text-xs">
+                        จุดที่ 3: {selectedDriverJob?.return_place || selectedDriverJob?.destination?.name || 'สถานที่คืนตู้'}
+                      </div>
+                      <Button
+                        type="button"
+                        onClick={() => handleDriverCheckin('return')}
+                        className="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold h-11 text-sm rounded-xl gap-2 shadow-md"
+                      >
+                        <MapPin className="h-5 w-5" />
+                        กดเช็คอินจุดคืนตู้ (บันทึกเวลา + GPS)
+                      </Button>
+                      {driverAppForm.checkin_return && (
+                        <p className="text-[11px] text-emerald-700 font-bold">{driverAppForm.checkin_return}</p>
+                      )}
+                    </div>
+
+                    <div className="p-3 bg-slate-50 border rounded-xl space-y-2 text-xs">
+                      <div className="font-bold text-slate-900">ถ่ายรูปส่งมอบตู้:</div>
+                      <label className="flex items-center gap-2 p-2 bg-white rounded-lg border cursor-pointer">
+                        <input 
+                          type="checkbox" 
+                          checked={driverAppForm.photo_return_front} 
+                          onChange={(e) => setDriverAppForm({ ...driverAppForm, photo_return_front: e.target.checked })}
+                          className="h-4 w-4 text-purple-600 rounded" 
+                        />
+                        <span className="font-semibold text-slate-900">📸 รูปหน้าตู้ส่งคืนที่ลาน/ท่าเรือ (บังคับ)</span>
+                      </label>
+
+                      <label className="flex items-center gap-2 p-2 bg-white rounded-lg border cursor-pointer">
+                        <input 
+                          type="checkbox" 
+                          checked={driverAppForm.photo_return_receipt} 
+                          onChange={(e) => setDriverAppForm({ ...driverAppForm, photo_return_receipt: e.target.checked })}
+                          className="h-4 w-4 text-slate-600 rounded" 
+                        />
+                        <span>🧾 สลิป Lift Off / Gate Charge</span>
+                      </label>
+
+                      <label className="flex items-center gap-2 p-2 bg-white rounded-lg border cursor-pointer">
+                        <input 
+                          type="checkbox" 
+                          checked={driverAppForm.photo_return_eir} 
+                          onChange={(e) => setDriverAppForm({ ...driverAppForm, photo_return_eir: e.target.checked })}
+                          className="h-4 w-4 text-slate-600 rounded" 
+                        />
+                        <span>📄 ใบรับตู้คืน EIR</span>
+                      </label>
+                    </div>
+
+                    <div>
+                      <Label className="text-xs">หมายเหตุหน้างานของ พขร.</Label>
                       <Input
-                        placeholder="ระบุสถานที่เช็คอิน หรือกดปุ่มลัดด้านบน"
-                        value={driverAppForm.checkin_location}
-                        onChange={(e) => setDriverAppForm({ ...driverAppForm, checkin_location: e.target.value })}
-                        className="bg-white text-sm"
+                        placeholder="ส่งมอบตู้เรียบร้อย ไม่มีรอยขูดขีด..."
+                        value={driverAppForm.driver_notes}
+                        onChange={(e) => setDriverAppForm({ ...driverAppForm, driver_notes: e.target.value })}
+                        className="text-xs"
                       />
                     </div>
 
-                    {/* Section 2: Container & Seal Details */}
-                    <div className="space-y-4 p-4 border rounded-xl bg-slate-50">
-                      <div className="font-bold text-slate-800 text-sm flex items-center gap-2">
-                        <Box className="h-4 w-4 text-blue-600" />
-                        ข้อมูลตู้คอนเทนเนอร์ & ซีลล็อค (กรอกเมื่อรับตู้)
-                      </div>
-
-                      <div className="grid sm:grid-cols-2 gap-4">
-                        <div className="space-y-1">
-                          <Label htmlFor="cno" className="text-xs font-semibold">
-                            หมายเลขตู้คอนเทนเนอร์ (Container No.) *
-                          </Label>
-                          <Input
-                            id="cno"
-                            placeholder="เช่น TCLU 123456-7"
-                            value={driverAppForm.container_no}
-                            onChange={(e) => setDriverAppForm({ ...driverAppForm, container_no: e.target.value.toUpperCase() })}
-                            className="bg-white font-mono uppercase"
-                          />
-                        </div>
-
-                        <div className="space-y-1">
-                          <Label htmlFor="sno" className="text-xs font-semibold flex items-center gap-1">
-                            <Lock className="h-3 w-3 text-slate-500" />
-                            หมายเลขซีลล็อคตู้ (Seal No.) *
-                          </Label>
-                          <Input
-                            id="sno"
-                            placeholder="เช่น SL-998822"
-                            value={driverAppForm.seal_no}
-                            onChange={(e) => setDriverAppForm({ ...driverAppForm, seal_no: e.target.value.toUpperCase() })}
-                            className="bg-white font-mono uppercase"
-                          />
-                        </div>
-                      </div>
-
-                      {/* Temperature for Reefer */}
-                      <div className="space-y-1">
-                        <Label htmlFor="temp" className="text-xs font-semibold flex items-center gap-1">
-                          <Thermometer className="h-3.5 w-3.5 text-cyan-600" />
-                          อุณหภูมิตู้ (°C) (สำหรับตู้เย็น Reefer RH)
-                        </Label>
-                        <Input
-                          id="temp"
-                          type="number"
-                          step="0.1"
-                          placeholder="เช่น -18.5 หรือ 4.0"
-                          value={driverAppForm.temperature}
-                          onChange={(e) => setDriverAppForm({ ...driverAppForm, temperature: e.target.value })}
-                          className="bg-white max-w-xs"
-                        />
-                      </div>
-
-                      <div className="space-y-1">
-                        <Label htmlFor="dnotes" className="text-xs font-semibold">
-                          หมายเหตุของ พขร. (เช่น สภาพตู้, ปัญหาการรอคอย)
-                        </Label>
-                        <Input
-                          id="dnotes"
-                          placeholder="ระบุข้อสังเกตเพิ่มเติมถ้ามี"
-                          value={driverAppForm.driver_notes}
-                          onChange={(e) => setDriverAppForm({ ...driverAppForm, driver_notes: e.target.value })}
-                          className="bg-white"
-                        />
-                      </div>
-                    </div>
-
-                    {/* Action Buttons */}
-                    <div className="flex flex-col sm:flex-row gap-3 pt-2">
-                      <Button
-                        type="button"
-                        onClick={() => handleSaveDriverUpdate(false)}
-                        className="flex-1 bg-blue-600 hover:bg-blue-700 gap-2"
-                      >
-                        <Clock className="h-4 w-4" />
-                        บันทึกสถานะกำลังวิ่งงาน (Save Progress)
-                      </Button>
-
-                      <Button
-                        type="button"
-                        onClick={() => handleSaveDriverUpdate(true)}
-                        className="flex-1 bg-emerald-600 hover:bg-emerald-700 gap-2 font-bold"
-                      >
-                        <CheckCircle2 className="h-4 w-4" />
-                        จบงาน & ส่งมอบตู้สำเร็จ (Complete Job)
-                      </Button>
-                    </div>
-                  </>
-                ) : (
-                  <div className="text-center py-12 text-slate-500">
-                    กรุณาเลือกงานที่ต้องการอัปเดตจากรายการด้านซ้าย
+                    {/* BIG COMPLETE BUTTON */}
+                    <Button
+                      type="button"
+                      onClick={() => handleSaveDriverUpdate(true)}
+                      className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-black h-12 text-base rounded-xl gap-2 shadow-lg"
+                    >
+                      <CheckCircle2 className="h-6 w-6" />
+                      จบงาน &amp; ส่งมอบตู้สำเร็จ (Complete Job)
+                    </Button>
                   </div>
                 )}
               </CardContent>
@@ -697,75 +1058,79 @@ export default function DispatchPage() {
         </TabsContent>
       </Tabs>
 
-      {/* ================= MODAL: ASSIGN DRIVER & VEHICLE ================= */}
+      {/* ================= MODAL: ASSIGN VEHICLE & DRIVER ================= */}
       <Dialog open={openAssignModal} onOpenChange={setOpenAssignModal}>
-        <DialogContent className="sm:max-w-[480px]">
-          <form onSubmit={handleSaveAssign}>
-            <DialogHeader>
-              <DialogTitle className="flex items-center gap-2">
-                <UserCheck className="h-5 w-5 text-blue-600" />
-                จ่ายงาน & มอบหมาย พขร. ({selectedJob?.job_no})
-              </DialogTitle>
-              <DialogDescription>
-                เลือกรถบรรทุกและพนักงานขับรถเพื่อวิ่งงานเที่ยวนี้
-              </DialogDescription>
-            </DialogHeader>
+        <DialogContent className="sm:max-w-[550px]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Truck className="h-5 w-5 text-blue-600" />
+              จ่ายงานขนส่ง (Assign Truck &amp; Driver)
+            </DialogTitle>
+            <DialogDescription>
+              เลือกรหัสรถย่อ (เช่น รถคัน-1) เพื่อดึงคนขับประจำรถขึ้นมาให้อัตโนมัติทันที
+            </DialogDescription>
+          </DialogHeader>
 
-            <div className="space-y-4 py-4 text-sm">
-              <div className="p-3 bg-slate-50 rounded-lg text-xs space-y-1">
-                <div><strong>เส้นทาง:</strong> {selectedJob?.origin?.name} ➔ {selectedJob?.destination?.name}</div>
-                <div><strong>ประเภทรถที่ต้องการ:</strong> {selectedJob?.vehicle_type}</div>
-                <div><strong>สเปกตู้:</strong> {selectedJob?.container_size}&apos; {selectedJob?.container_type}</div>
-              </div>
+          <form onSubmit={handleSaveAssign} className="space-y-4 text-xs">
+            <div className="p-3 bg-slate-100 rounded-lg space-y-1">
+              <div>งาน: <strong className="font-mono text-blue-800">{selectedJob?.job_no}</strong> | ลูกค้า: <strong>{selectedJob?.customer?.company_name}</strong></div>
+              <div>Volume: <strong className="font-mono">{selectedJob?.container_amount || 1}x{selectedJob?.container_size}&apos; {selectedJob?.container_type}</strong> | สินค้า: {selectedJob?.commodity_name || 'ทั่วไป'}</div>
+            </div>
 
-              <div className="space-y-1">
-                <Label htmlFor="veh_select">เลือกรถบรรทุก (ทะเบียนรถ) *</Label>
-                <select
-                  id="veh_select"
-                  required
-                  className="w-full border rounded-md p-2 text-sm bg-white border-slate-300"
-                  value={assignForm.vehicle_id}
-                  onChange={(e) => setAssignForm({ ...assignForm, vehicle_id: e.target.value })}
-                >
-                  <option value="">-- เลือกรถบรรทุก --</option>
-                  {vehicles.map((v) => (
-                    <option key={v.id} value={v.id}>
-                      {v.plate_number} ({v.vehicle_type} - {v.capacity_tons} ตัน)
-                    </option>
-                  ))}
-                </select>
-              </div>
+            <div>
+              <Label className="text-xs font-bold text-blue-900">เลือกรถที่ต้องการจ่ายงาน *</Label>
+              <select
+                required
+                className="w-full border-2 border-blue-200 rounded-lg p-2.5 text-xs bg-white font-bold"
+                value={assignForm.vehicle_id}
+                onChange={(e) => handleVehicleChange(e.target.value)}
+              >
+                <option value="">-- เลือกรถ --</option>
+                {vehicles.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.truck_name_id || 'รถ'} ({v.plate_number}) - {v.truck_brand} {v.truck_model}
+                  </option>
+                ))}
+              </select>
+            </div>
 
-              <div className="space-y-1">
-                <Label htmlFor="driv_select">เลือกพนักงานขับรถ (พขร.) *</Label>
-                <select
-                  id="driv_select"
-                  required
-                  className="w-full border rounded-md p-2 text-sm bg-white border-slate-300"
-                  value={assignForm.driver_id}
-                  onChange={(e) => setAssignForm({ ...assignForm, driver_id: e.target.value })}
-                >
-                  <option value="">-- เลือก พขร. --</option>
-                  {drivers.map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.name} (โทร: {d.phone || '-'}) [{d.status}]
-                    </option>
-                  ))}
-                </select>
+            {/* Auto-paired Driver info box */}
+            <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg space-y-1">
+              <div className="font-bold text-emerald-900 flex items-center gap-1.5">
+                <UserCheck className="h-4 w-4 text-emerald-600" />
+                คนขับประจำรถ (ดึงอัตโนมัติจาก Master File):
               </div>
+              <div className="font-bold text-sm text-slate-900">{assignForm.driver_name}</div>
+              <div className="text-slate-600">เบอร์โทรติดต่อ: <strong className="font-mono">{assignForm.driver_phone || '-'}</strong></div>
+              <p className="text-[11px] text-emerald-700 italic pt-1">
+                * หากต้องการเปลี่ยนคนขับประจำรถคันนี้ ให้ไปแก้ไขที่ Master Data รถ
+              </p>
+            </div>
 
-              <div className="space-y-1">
-                <Label htmlFor="st_select">สถานะงานหลังจ่ายรถ</Label>
-                <select
-                  id="st_select"
-                  className="w-full border rounded-md p-2 text-sm bg-white border-slate-300"
-                  value={assignForm.status}
-                  onChange={(e) => setAssignForm({ ...assignForm, status: e.target.value })}
-                >
-                  <option value="assigned">มอบหมายแล้ว (Assigned)</option>
-                  <option value="in_progress">กำลังวิ่งงาน (In Progress)</option>
-                </select>
-              </div>
+            <div>
+              <Label className="text-xs font-bold">ปรับสถานะงาน</Label>
+              <select
+                className="w-full border rounded-lg p-2 text-xs bg-white"
+                value={assignForm.status}
+                onChange={(e) => setAssignForm({ ...assignForm, status: e.target.value })}
+              >
+                <option value="assigned">มอบหมายแล้ว (Assigned)</option>
+                <option value="in_progress">กำลังวิ่งงาน (In Progress)</option>
+                <option value="draft">ฉบับร่าง (Draft)</option>
+              </select>
+            </div>
+
+            {/* Quick Line Copy */}
+            <div className="pt-2 border-t">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={copyLineToClipboard}
+                className="w-full gap-2 text-emerald-800 border-emerald-300 hover:bg-emerald-50 h-9 font-semibold"
+              >
+                {copiedLine ? <Check className="h-4 w-4 text-emerald-600" /> : <Copy className="h-4 w-4 text-emerald-600" />}
+                {copiedLine ? 'คัดลอกข้อความสรุปงานแล้ว!' : 'คัดลอกสรุปงานส่ง LINE ให้ พขร.'}
+              </Button>
             </div>
 
             <DialogFooter>
@@ -773,124 +1138,87 @@ export default function DispatchPage() {
                 ยกเลิก
               </Button>
               <Button type="submit" className="bg-blue-600 hover:bg-blue-700">
-                ยืนยันการจ่ายงาน
+                บันทึกจ่ายงาน
               </Button>
             </DialogFooter>
           </form>
         </DialogContent>
       </Dialog>
 
-      {/* ================= MODAL: ACTUAL COST & PROFIT ================= */}
+      {/* ================= MODAL: COST & PROFIT ================= */}
       <Dialog open={openCostModal} onOpenChange={setOpenCostModal}>
         <DialogContent className="sm:max-w-[500px]">
-          <form onSubmit={handleSaveCost}>
-            <DialogHeader>
-              <DialogTitle className="flex items-center gap-2">
-                <Calculator className="h-5 w-5 text-emerald-600" />
-                คำนวณต้นทุนและกำไรจริง ({selectedJob?.job_no})
-              </DialogTitle>
-              <DialogDescription>
-                บันทึกค่าน้ำมัน ค่าแรง พขร. ค่าทางด่วน และค่าเสียเวลาจอดรอ
-              </DialogDescription>
-            </DialogHeader>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Calculator className="h-5 w-5 text-emerald-600" />
+              คำนวณต้นทุนจริง &amp; สรุปกำไรเที่ยววิ่ง
+            </DialogTitle>
+            <DialogDescription>
+              บันทึกค่าน้ำมัน, เบี้ยเลี้ยง, ทางด่วน, OT และค่าใช้จ่ายอื่นๆ
+            </DialogDescription>
+          </DialogHeader>
 
-            <div className="space-y-3 py-3 text-sm">
-              <div className="p-3 bg-emerald-50 rounded-lg text-xs flex justify-between font-bold text-emerald-900">
-                <span>ราคาขายเรียกเก็บ (รายได้):</span>
-                <span>฿{Number(selectedJob?.revenue || 0).toLocaleString()}</span>
+          <form onSubmit={handleSaveCost} className="space-y-4 text-xs">
+            <div className="p-3 bg-slate-100 rounded-lg flex justify-between font-bold text-sm">
+              <span>รายได้ค่าขนส่ง (Revenue):</span>
+              <span className="text-emerald-700">฿{Number(selectedJob?.revenue || 0).toLocaleString()}</span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">ค่าน้ำมันจริง (Fuel)</Label>
+                <Input
+                  type="number"
+                  value={costForm.fuel_cost}
+                  onChange={(e) => setCostForm({ ...costForm, fuel_cost: e.target.value })}
+                />
               </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <Label htmlFor="fuel">ค่าน้ำมัน (Fuel Cost)</Label>
-                  <Input
-                    id="fuel"
-                    type="number"
-                    value={costForm.fuel_cost}
-                    onChange={(e) => setCostForm({ ...costForm, fuel_cost: e.target.value })}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="allowance">ค่าแรง/เบี้ยเลี้ยง พขร.</Label>
-                  <Input
-                    id="allowance"
-                    type="number"
-                    value={costForm.driver_allowance}
-                    onChange={(e) => setCostForm({ ...costForm, driver_allowance: e.target.value })}
-                  />
-                </div>
+              <div>
+                <Label className="text-xs">เบี้ยเลี้ยง พขร. จริง</Label>
+                <Input
+                  type="number"
+                  value={costForm.driver_allowance}
+                  onChange={(e) => setCostForm({ ...costForm, driver_allowance: e.target.value })}
+                />
               </div>
+            </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <Label htmlFor="toll">ค่าทางด่วน (Toll Fees)</Label>
-                  <Input
-                    id="toll"
-                    type="number"
-                    value={costForm.toll_fee}
-                    onChange={(e) => setCostForm({ ...costForm, toll_fee: e.target.value })}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="waiting">ค่าเสียเวลาจอดรอ (Waiting)</Label>
-                  <Input
-                    id="waiting"
-                    type="number"
-                    value={costForm.waiting_fee}
-                    onChange={(e) => setCostForm({ ...costForm, waiting_fee: e.target.value })}
-                  />
-                </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">ค่าทางด่วนจริง</Label>
+                <Input
+                  type="number"
+                  value={costForm.toll_fee}
+                  onChange={(e) => setCostForm({ ...costForm, toll_fee: e.target.value })}
+                />
               </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <Label htmlFor="ot">ค่าล่วงเวลา (OT)</Label>
-                  <Input
-                    id="ot"
-                    type="number"
-                    value={costForm.ot_fee}
-                    onChange={(e) => setCostForm({ ...costForm, ot_fee: e.target.value })}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="other">ค่าใช้จ่ายอื่นๆ</Label>
-                  <Input
-                    id="other"
-                    type="number"
-                    value={costForm.other_cost}
-                    onChange={(e) => setCostForm({ ...costForm, other_cost: e.target.value })}
-                  />
-                </div>
+              <div>
+                <Label className="text-xs">ค่าเสียเวลาจอดรอ (Waiting)</Label>
+                <Input
+                  type="number"
+                  value={costForm.waiting_fee}
+                  onChange={(e) => setCostForm({ ...costForm, waiting_fee: e.target.value })}
+                />
               </div>
+            </div>
 
-              {/* Live Preview Calculation */}
-              {(() => {
-                const total =
-                  (parseFloat(costForm.fuel_cost) || 0) +
-                  (parseFloat(costForm.driver_allowance) || 0) +
-                  (parseFloat(costForm.toll_fee) || 0) +
-                  (parseFloat(costForm.waiting_fee) || 0) +
-                  (parseFloat(costForm.ot_fee) || 0) +
-                  (parseFloat(costForm.other_cost) || 0);
-                const rev = Number(selectedJob?.revenue || 0);
-                const prof = rev - total;
-                const margin = rev > 0 ? ((prof / rev) * 100).toFixed(1) : '0';
-
-                return (
-                  <div className="p-3 bg-slate-100 rounded-lg space-y-1 text-xs mt-2 border">
-                    <div className="flex justify-between text-slate-700">
-                      <span>รวมต้นทุนทั้งหมด:</span>
-                      <strong className="text-rose-600">฿{total.toLocaleString()}</strong>
-                    </div>
-                    <div className="flex justify-between text-sm">
-                      <span className="font-bold text-slate-900">กำไรสุทธิคำนวณได้:</span>
-                      <strong className={prof >= 0 ? 'text-emerald-600' : 'text-rose-600'}>
-                        ฿{prof.toLocaleString()} ({margin}%)
-                      </strong>
-                    </div>
-                  </div>
-                );
-              })()}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">ค่าล่วงเวลา (OT)</Label>
+                <Input
+                  type="number"
+                  value={costForm.ot_fee}
+                  onChange={(e) => setCostForm({ ...costForm, ot_fee: e.target.value })}
+                />
+              </div>
+              <div>
+                <Label className="text-xs">ค่าใช้จ่ายอื่นๆ</Label>
+                <Input
+                  type="number"
+                  value={costForm.other_cost}
+                  onChange={(e) => setCostForm({ ...costForm, other_cost: e.target.value })}
+                />
+              </div>
             </div>
 
             <DialogFooter>
@@ -898,7 +1226,7 @@ export default function DispatchPage() {
                 ยกเลิก
               </Button>
               <Button type="submit" className="bg-emerald-600 hover:bg-emerald-700">
-                บันทึกต้นทุนและคำนวณกำไร
+                บันทึกต้นทุนจริง
               </Button>
             </DialogFooter>
           </form>
@@ -913,114 +1241,66 @@ export default function DispatchPage() {
               <Printer className="h-5 w-5 text-blue-600" />
               พิมพ์ใบสั่งงาน พขร. (Job Order Sheet)
             </DialogTitle>
-            <DialogDescription>
-              ตรวจสอบความถูกต้องของเอกสารก่อนสั่งพิมพ์ให้พนักงานขับรถ
-            </DialogDescription>
           </DialogHeader>
 
-          {/* Printable Job Order Sheet */}
-          <div id="job-order-print" className="border-2 border-slate-900 p-6 rounded-lg bg-white text-slate-900 space-y-4 print:border-none print:p-0">
+          <div className="border-2 border-slate-900 p-6 rounded-lg bg-white text-slate-900 space-y-4 print:border-none print:p-0">
             {/* Header */}
-            <div className="border-b-2 border-slate-900 pb-3 flex justify-between items-start">
-              <div>
-                <h2 className="text-xl font-black tracking-wide text-slate-900">บริษัท คอนเนค ทรานสปอร์ต จำกัด</h2>
-                <p className="text-xs text-slate-600">CONNECT TRANSPORT CO., LTD. | ระบบบริหารงานขนส่งตู้คอนเทนเนอร์</p>
-                <p className="text-[11px] text-slate-500">มาตรฐานความปลอดภัย ISO 39001 Road Traffic Safety</p>
+            <div className="flex justify-between items-start border-b-2 border-slate-900 pb-3">
+              <div className="flex items-center gap-3">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src="/images/logo-print.png" alt="Connect Transport" className="h-10 w-auto object-contain" />
+                <div>
+                  <h3 className="font-black text-base text-slate-900">บริษัท คอนเนค ทรานสปอร์ต จำกัด</h3>
+                  <p className="text-[10px] text-slate-600">369/1 ถนนเลียบคลองมอญ เขตลาดกระบัง กทม. โทร 089-5351313</p>
+                </div>
               </div>
               <div className="text-right">
-                <div className="text-lg font-black font-mono text-blue-800">{selectedJob?.job_no}</div>
-                <div className="text-xs text-slate-600">วันที่: {selectedJob?.job_date}</div>
-                <Badge variant="outline" className="text-xs font-bold mt-1">
-                  ใบสั่งงาน พขร.
-                </Badge>
+                <div className="font-black text-sm text-blue-900">ใบสั่งงานขนส่งสินค้า</div>
+                <div className="font-mono font-bold text-xs">JOB NO: {selectedJob?.job_no}</div>
+                <div className="text-[10px] text-slate-500">วันที่: {selectedJob?.job_date}</div>
               </div>
             </div>
 
-            {/* Job Information Grid */}
-            <div className="grid grid-cols-2 gap-4 text-xs">
-              <div className="space-y-1 p-2 bg-slate-50 rounded border">
+            {/* Info Table */}
+            <div className="grid grid-cols-2 gap-3 text-xs bg-slate-50 p-3 rounded border">
+              <div>
                 <div><strong>ลูกค้า:</strong> {selectedJob?.customer?.company_name}</div>
-                <div><strong>ผู้ติดต่อ:</strong> {selectedJob?.customer?.contact_name || '-'} (โทร: {selectedJob?.customer?.phone || '-'})</div>
-                <div><strong>ประเภทงาน:</strong> {selectedJob?.job_type}</div>
+                <div><strong>สายเรือ:</strong> {selectedJob?.ship_line || '-'}</div>
+                <div><strong>Booking No:</strong> <span className="font-mono">{selectedJob?.book_no || '-'}</span></div>
+                <div><strong>สินค้า:</strong> {selectedJob?.commodity_name || 'ทั่วไป'}</div>
               </div>
-              <div className="space-y-1 p-2 bg-slate-50 rounded border">
-                <div><strong>พนักงานขับรถ (พขร.):</strong> {selectedJob?.driver?.name || 'ยังไม่ระบุ'}</div>
-                <div><strong>ทะเบียนรถ:</strong> {selectedJob?.vehicle?.plate_number || 'ยังไม่ระบุ'}</div>
-                <div><strong>เบอร์โทร พขร.:</strong> {selectedJob?.driver?.phone || '-'}</div>
-              </div>
-            </div>
-
-            {/* Route Details */}
-            <div className="p-3 bg-blue-50/60 rounded border border-blue-200 text-xs space-y-1.5">
-              <div className="font-bold text-blue-900 text-sm">รายละเอียดเส้นทาง (Route Details):</div>
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <span className="font-semibold text-slate-700">1. จุดรับของ/ลานตู้ (ต้นทาง):</span>
-                  <div className="text-slate-900 font-bold">{selectedJob?.origin?.name}</div>
-                  <div className="text-[11px] text-slate-500">{selectedJob?.origin?.address}</div>
-                </div>
-                <div>
-                  <span className="font-semibold text-slate-700">2. จุดส่งของ/โรงงาน (ปลายทาง):</span>
-                  <div className="text-slate-900 font-bold">{selectedJob?.destination?.name}</div>
-                  <div className="text-[11px] text-slate-500">{selectedJob?.destination?.address}</div>
-                </div>
+              <div>
+                <div><strong>รถบรรทุก:</strong> {selectedJob?.vehicle?.truck_name_id || '-'} ({selectedJob?.vehicle?.plate_number || '-'})</div>
+                <div><strong>พขร. ที่มอบหมาย:</strong> {selectedJob?.driver?.name || '-'}</div>
+                <div><strong>เบอร์โทร พขร:</strong> {selectedJob?.driver?.phone || '-'}</div>
+                <div><strong>สเปกตู้:</strong> {selectedJob?.container_amount || 1}x{selectedJob?.container_size}&apos; {selectedJob?.container_type}</div>
               </div>
             </div>
 
-            {/* Container Details */}
-            <div className="border rounded p-3 text-xs space-y-2">
-              <div className="font-bold text-slate-900">ข้อมูลตู้คอนเทนเนอร์ (Container Specification):</div>
-              <div className="grid grid-cols-4 gap-2 text-center bg-slate-100 p-2 rounded">
-                <div>
-                  <span className="text-slate-500 block text-[10px]">ขนาด</span>
-                  <strong>{selectedJob?.container_size} ฟุต</strong>
-                </div>
-                <div>
-                  <span className="text-slate-500 block text-[10px]">ชนิดตู้</span>
-                  <strong>{selectedJob?.container_type}</strong>
-                </div>
-                <div>
-                  <span className="text-slate-500 block text-[10px]">ชนิดสินค้า</span>
-                  <strong>{selectedJob?.cargo_type}</strong>
-                </div>
-                <div>
-                  <span className="text-slate-500 block text-[10px]">เอกสารท่าเรือ (PAT)</span>
-                  <strong>{selectedJob?.pat_letter_required ? 'ต้องทำ PAT' : 'ไม่มี'}</strong>
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-3 pt-1">
-                <div className="border-b border-dashed pb-1">
-                  หมายเลขตู้ (Container No.): <strong className="font-mono text-sm">{selectedJob?.container_no || '........................'}</strong>
-                </div>
-                <div className="border-b border-dashed pb-1">
-                  หมายเลขซีล (Seal No.): <strong className="font-mono text-sm">{selectedJob?.seal_no || '........................'}</strong>
-                </div>
-              </div>
+            {/* Route */}
+            <div className="border rounded p-3 text-xs space-y-1">
+              <div className="font-bold text-blue-900">กำหนดการเดินทาง 3 จุด:</div>
+              <div>1. จุดรับตู้: <strong>{selectedJob?.pickup_place || selectedJob?.origin?.name || '-'}</strong> ({selectedJob?.pickup_date})</div>
+              <div>2. จุดบรรจุ: <strong>{selectedJob?.packing_place || 'โรงงานลูกค้า'}</strong> ({selectedJob?.packing_date})</div>
+              <div>3. จุดคืนตู้: <strong>{selectedJob?.return_place || selectedJob?.destination?.name || '-'}</strong> ({selectedJob?.return_date})</div>
             </div>
 
-            {/* Safety & Driver Instructions */}
-            <div className="text-[11px] text-slate-600 bg-amber-50/60 p-2.5 rounded border border-amber-200">
-              <strong>ข้อกำหนดความปลอดภัยและการปฏิบัติงาน:</strong>
-              <ul className="list-disc pl-4 mt-1 space-y-0.5">
-                <li>ตรวจสภาพรถ รัดตรึงตู้ และล็อก Twistlock ให้ครบ 4 มุมก่อนออกเดินทาง</li>
-                <li>ปฏิบัติตามความเร็วที่กฎหมายกำหนด และพักผ่อนตามข้อกำหนด ISO 39001</li>
-                <li>เมื่อถึงจุดหมายให้ตรวจสอบหมายเลขตู้ และ Seal ให้ตรงกับเอกสารก่อนเปิดตู้</li>
-              </ul>
-            </div>
-
-            {/* Signature Area */}
-            <div className="grid grid-cols-3 gap-4 pt-6 text-center text-xs">
-              <div className="border-t border-slate-400 pt-2">
+            {/* 3 Party Signatures */}
+            <div className="grid grid-cols-3 gap-2 pt-6 text-center text-[11px] border-t">
+              <div>
                 <div>( ......................................... )</div>
-                <div className="text-slate-500 text-[11px] mt-1">เจ้าหน้าที่จ่ายงาน (Dispatcher)</div>
+                <div className="font-bold mt-1">ผู้จ่ายงาน (Dispatcher)</div>
+                <div className="text-slate-400 text-[10px]">วันที่ ......./......./.......</div>
               </div>
-              <div className="border-t border-slate-400 pt-2">
+              <div>
                 <div>( ......................................... )</div>
-                <div className="text-slate-500 text-[11px] mt-1">พนักงานขับรถ (Driver)</div>
+                <div className="font-bold mt-1">พนักงานขับรถ (Driver)</div>
+                <div className="text-slate-400 text-[10px]">วันที่ ......./......./.......</div>
               </div>
-              <div className="border-t border-slate-400 pt-2">
+              <div>
                 <div>( ......................................... )</div>
-                <div className="text-slate-500 text-[11px] mt-1">ผู้รับสินค้าปลายทาง</div>
+                <div className="font-bold mt-1">ผู้รับสินค้า (Customer)</div>
+                <div className="text-slate-400 text-[10px]">วันที่ ......./......./.......</div>
               </div>
             </div>
           </div>
@@ -1029,9 +1309,9 @@ export default function DispatchPage() {
             <Button type="button" variant="outline" onClick={() => setOpenPrintModal(false)}>
               ปิดหน้าต่าง
             </Button>
-            <Button type="button" onClick={handlePrint} className="bg-blue-600 hover:bg-blue-700 gap-2">
+            <Button type="button" onClick={() => window.print()} className="bg-blue-600 hover:bg-blue-700 gap-2">
               <Printer className="h-4 w-4" />
-              สั่งพิมพ์ใบสั่งงาน (Print)
+              พิมพ์ใบสั่งงาน
             </Button>
           </DialogFooter>
         </DialogContent>

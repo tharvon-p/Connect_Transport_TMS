@@ -2,7 +2,7 @@ export type VehicleType = '4_wheel' | '6_wheel' | '10_wheel' | 'trailer' | 'semi
 export type JobType = 'heavy_to_open' | 'empty_to_stuff' | 'empty_return' | 'yard_move';
 export type JobStatus = 'draft' | 'assigned' | 'in_progress' | 'completed' | 'cancelled';
 export type ContainerSize = '20' | '40' | '45';
-export type ContainerType = 'DC' | 'HC' | 'OT' | 'RH';
+export type ContainerType = 'DC' | 'HC' | 'OT' | 'RH' | 'GP' | 'Reefer' | string;
 export type CargoType = 'NON_DG' | 'DG';
 export type LocationType = 'depot' | 'factory' | 'port' | 'yard' | 'other';
 export type ExpenseType = 'per_diem' | 'fuel' | 'toll' | 'waiting' | 'overtime' | 'advance';
@@ -17,6 +17,7 @@ export interface Vehicle {
   vehicle_type: VehicleType;
   capacity_tons: number;
   driver_id?: string | null; // ผูกรถและคนขับประจำรถ
+  paired_driver_id?: string | null; // alias for driver_id
   driver?: Driver | null;
   iso_expiry_date?: string | null;
   insurance_expiry_date?: string | null;
@@ -138,9 +139,12 @@ export interface Job {
   customer_id: string;
   shipper_name?: string | null;
   ship_line?: string | null;
+  shipping_agent?: string | null; // alias for ship_line
   bl_no?: string | null;
   book_no?: string | null;
+  booking_no?: string | null; // alias for book_no
   commodity_name?: string | null;
+  truck_name_id?: string | null; // e.g. รถคัน-1
 
   // Route Places & Dates
   pickup_place?: string | null;
@@ -158,8 +162,10 @@ export interface Job {
   container_size: ContainerSize;
   container_type: ContainerType;
   container_amount?: number; // e.g. 1, 2, 5 containers
+  volume_count?: number; // alias for container_amount
   cargo_type: CargoType;
   status: JobStatus;
+  invoice_status?: 'pending' | 'billed' | string;
 
   // Multi-truck assignments (1 : N)
   assignments?: JobAssignment[];

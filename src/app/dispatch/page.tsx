@@ -108,6 +108,8 @@ export default function DispatchPage() {
     driver_id: '',
     driver_name: '',
     driver_phone: '',
+    container_no: '',
+    seal_no: '',
     status: 'assigned',
   });
 
@@ -219,15 +221,19 @@ export default function DispatchPage() {
     const currentVeh = vehicles.find((v) => v.id === job.vehicle_id);
     const defaultVeh = currentVeh || vehicles[0];
 
-    // Paired driver
+    // Current assigned driver or paired driver
+    const currentDriver = drivers.find(d => d.id === job.driver_id);
     const pairedDriver = defaultVeh?.driver || drivers.find(d => d.id === defaultVeh?.driver_id);
+    const activeDriver = currentDriver || pairedDriver;
 
     setAssignForm({
       vehicle_id: defaultVeh?.id || '',
       truck_name_id: defaultVeh?.truck_name_id || '',
-      driver_id: pairedDriver?.id || defaultVeh?.driver_id || '',
-      driver_name: pairedDriver?.name || 'ยังไม่ผูกคนขับ',
-      driver_phone: pairedDriver?.phone || '',
+      driver_id: activeDriver?.id || defaultVeh?.driver_id || '',
+      driver_name: activeDriver?.name || 'ยังไม่ผูกคนขับ',
+      driver_phone: activeDriver?.phone || '',
+      container_no: job.container_no || '',
+      seal_no: job.seal_no || '',
       status: job.status === 'draft' ? 'assigned' : job.status,
     });
 
@@ -240,14 +246,26 @@ export default function DispatchPage() {
     const veh = vehicles.find((v) => v.id === vehId);
     const pairedDriver = veh?.driver || drivers.find(d => d.id === veh?.driver_id);
 
-    setAssignForm({
+    setAssignForm(prev => ({
+      ...prev,
       vehicle_id: vehId,
       truck_name_id: veh?.truck_name_id || '',
       driver_id: pairedDriver?.id || '',
       driver_name: pairedDriver?.name || 'ยังไม่ผูกคนขับประจำรถ',
       driver_phone: pairedDriver?.phone || '',
-      status: 'assigned',
-    });
+      status: prev.status === 'draft' ? 'assigned' : prev.status,
+    }));
+  };
+
+  // When driver is manually chosen (e.g. relief driver)
+  const handleDriverChange = (driverId: string) => {
+    const d = drivers.find(drv => drv.id === driverId);
+    setAssignForm(prev => ({
+      ...prev,
+      driver_id: driverId,
+      driver_name: d?.name || '',
+      driver_phone: d?.phone || '',
+    }));
   };
 
   // Save Assignment
@@ -260,6 +278,8 @@ export default function DispatchPage() {
       .update({
         vehicle_id: assignForm.vehicle_id,
         driver_id: assignForm.driver_id || null,
+        container_no: assignForm.container_no ? assignForm.container_no.toUpperCase() : null,
+        seal_no: assignForm.seal_no ? assignForm.seal_no.toUpperCase() : null,
         status: assignForm.status,
       })
       .eq('id', selectedJob.id);
@@ -284,19 +304,22 @@ export default function DispatchPage() {
   const generateLineText = (job: Job | null) => {
     if (!job) return '';
     const veh = vehicles.find(v => v.id === assignForm.vehicle_id) || job.vehicle;
+    const containerStr = assignForm.container_no || job.container_no;
+    const sealStr = assignForm.seal_no || job.seal_no;
+
     return `🚛 คำสั่งงานขนส่ง: ${job.job_no}
 📅 วันที่วิ่งงาน: ${job.job_date}
 🏢 ลูกค้า: ${job.customer?.company_name || 'ลูกค้าทั่วไป'}
 🚢 สายเรือ: ${job.ship_line || '-'} | Booking: ${job.book_no || '-'}
 📦 สเปกตู้: ${job.container_amount || 1}x${job.container_size || '40'}' ${job.container_type || 'HC'} | สินค้า: ${job.commodity_name || 'ทั่วไป'}
-------------------------------------
+${containerStr ? `🔢 หมายเลขตู้ (Container No.): ${containerStr}\n` : ''}${sealStr ? `🔒 หมายเลขซีล (Seal No.): ${sealStr}\n` : ''}------------------------------------
 📍 จุดที่ 1 (รับตู้): ${job.pickup_place || job.origin?.name || '-'} (${job.pickup_date || job.job_date})
 📍 จุดที่ 2 (บรรจุสินค้า): ${job.packing_place || 'โรงงานลูกค้า'} (${job.packing_date || job.job_date})
 📍 จุดที่ 3 (คืนตู้): ${job.return_place || job.destination?.name || '-'} (${job.return_date || job.job_date})
 ------------------------------------
 🚛 รถ: ${veh?.truck_name_id || 'รถคัน-1'} (${veh?.plate_number || '-'})
 👨‍✈️ พขร.: ${assignForm.driver_name || job.driver?.name || '-'} (${assignForm.driver_phone || job.driver?.phone || '-'})
-⚠️ พขร. กรุณาเช็คอินและถ่ายรูปตรวจสภาพตู้ 5 รูปผ่าน Driver App เมื่อถึงจุดรับตู้`;
+${job.driver_notes ? `📝 หมายเหตุ/คำสั่งพิเศษ: ${job.driver_notes}\n` : ''}⚠️ พขร. กรุณาเช็คอินและถ่ายรูปตรวจสภาพตู้ 5 รูปผ่าน Driver App เมื่อถึงจุดรับตู้`;
   };
 
   const copyLineToClipboard = () => {
@@ -1116,17 +1139,63 @@ export default function DispatchPage() {
               </select>
             </div>
 
-            {/* Auto-paired Driver info box */}
-            <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg space-y-1">
-              <div className="font-bold text-emerald-900 flex items-center gap-1.5">
-                <UserCheck className="h-4 w-4 text-emerald-600" />
-                คนขับประจำรถ (ดึงอัตโนมัติจาก Master File):
+            {/* Auto-paired Driver with manual override option */}
+            {(() => {
+              const selectedVeh = vehicles.find((v) => v.id === assignForm.vehicle_id);
+              return (
+                <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg space-y-2">
+                  <div className="font-bold text-emerald-900 flex items-center justify-between text-xs">
+                    <span className="flex items-center gap-1.5">
+                      <UserCheck className="h-4 w-4 text-emerald-600" />
+                      พนักงานขับรถ (พขร.) *:
+                    </span>
+                    <span className="text-[11px] text-emerald-700 font-normal">
+                      (ดึงอัตโนมัติ หรือเลือกเปลี่ยนคนขับได้)
+                    </span>
+                  </div>
+                  <select
+                    required
+                    className="w-full border rounded-lg p-2 text-xs bg-white font-medium"
+                    value={assignForm.driver_id}
+                    onChange={(e) => handleDriverChange(e.target.value)}
+                  >
+                    <option value="">-- เลือกคนขับ --</option>
+                    {drivers.map((d) => {
+                      const isPaired = selectedVeh?.driver_id === d.id || selectedVeh?.driver?.id === d.id;
+                      return (
+                        <option key={d.id} value={d.id}>
+                          {d.name} {d.phone ? `(${d.phone})` : ''} {isPaired ? '⭐ [คนขับประจำรถคันนี้]' : ''}
+                        </option>
+                      );
+                    })}
+                  </select>
+                  <div className="text-slate-600 text-[11px]">
+                    เบอร์โทรติดต่อ: <strong className="font-mono text-slate-800">{assignForm.driver_phone || '-'}</strong>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Container No & Seal No (Optional at dispatch time) */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">หมายเลขตู้ (Container No.)</Label>
+                <Input
+                  placeholder="เช่น TGHU9482710 (ถ้าทราบแล้ว)"
+                  value={assignForm.container_no}
+                  onChange={(e) => setAssignForm({ ...assignForm, container_no: e.target.value })}
+                  className="font-mono text-xs uppercase"
+                />
               </div>
-              <div className="font-bold text-sm text-slate-900">{assignForm.driver_name}</div>
-              <div className="text-slate-600">เบอร์โทรติดต่อ: <strong className="font-mono">{assignForm.driver_phone || '-'}</strong></div>
-              <p className="text-[11px] text-emerald-700 italic pt-1">
-                * หากต้องการเปลี่ยนคนขับประจำรถคันนี้ ให้ไปแก้ไขที่ Master Data รถ
-              </p>
+              <div>
+                <Label className="text-xs">หมายเลขซีล (Seal No.)</Label>
+                <Input
+                  placeholder="เช่น EMCA291834 (ถ้าทราบแล้ว)"
+                  value={assignForm.seal_no}
+                  onChange={(e) => setAssignForm({ ...assignForm, seal_no: e.target.value })}
+                  className="font-mono text-xs uppercase"
+                />
+              </div>
             </div>
 
             <div>

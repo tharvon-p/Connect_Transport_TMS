@@ -4,6 +4,7 @@ import { useState, useEffect, useMemo } from 'react';
 import Image from 'next/image';
 import { supabase } from '@/lib/supabase';
 import { Job, Driver, Vehicle, DriverExpense, ExpenseType } from '@/types/database';
+import { SortableHeader, sortArray, SortState } from '@/components/ui/table-sort';
 import { 
   Wallet, 
   Plus, 
@@ -86,6 +87,15 @@ export default function ExpensesPage() {
   const [driverFilter, setDriverFilter] = useState<string>('all');
   const [truckFilter, setTruckFilter] = useState<string>('all');
   const [typeFilter, setTypeFilter] = useState<string>('all');
+
+  // Sorting State
+  const [expenseSort, setExpenseSort] = useState<SortState>({ key: 'created_at', direction: 'desc' });
+  const handleSort = (key: string) => {
+    setExpenseSort(prev => ({
+      key,
+      direction: prev.key === key ? (prev.direction === 'asc' ? 'desc' : 'asc') : 'asc'
+    }));
+  };
 
   // Modal States
   const [openAddModal, setOpenAddModal] = useState(false);
@@ -246,6 +256,17 @@ export default function ExpensesPage() {
       return matchDriver && matchType && matchTruck;
     });
   }, [expenses, driverFilter, truckFilter, typeFilter]);
+
+  // Sorted expenses
+  const sortedExpenses = useMemo(() => {
+    return sortArray(filteredExpenses, expenseSort.key, expenseSort.direction, (e) => {
+      if (expenseSort.key === 'job_no') return e.job?.job_no || '';
+      if (expenseSort.key === 'truck') return e.truck_name_id || e.job?.truck_name_id || '';
+      if (expenseSort.key === 'driver') return e.driver?.name || '';
+      if (expenseSort.key === 'amount') return Number(e.amount || 0);
+      return (e as any)[expenseSort.key];
+    });
+  }, [filteredExpenses, expenseSort]);
 
   // Financial Calculations on filtered expenses
   const totalPerDiem = filteredExpenses.filter((e) => e.expense_type === 'per_diem').reduce((s, e) => s + Number(e.amount), 0);
@@ -567,25 +588,25 @@ export default function ExpensesPage() {
             <Table>
               <TableHeader>
                 <TableRow className="bg-slate-100/80 text-xs">
-                  <TableHead className="font-semibold text-slate-800">วันที่บันทึก</TableHead>
-                  <TableHead className="font-semibold text-slate-800">รหัสงาน (Job ID)</TableHead>
-                  <TableHead className="font-semibold text-slate-800">เบอร์รถ / พขร.</TableHead>
-                  <TableHead className="font-semibold text-slate-800">ประเภทค่าใช้จ่าย</TableHead>
+                  <SortableHeader title="วันที่บันทึก" sortKey="created_at" currentSort={expenseSort} onSort={handleSort} />
+                  <SortableHeader title="รหัสงาน (Job ID)" sortKey="job_no" currentSort={expenseSort} onSort={handleSort} className="font-bold text-blue-900" />
+                  <SortableHeader title="เบอร์รถ / พขร." sortKey="truck" currentSort={expenseSort} onSort={handleSort} />
+                  <SortableHeader title="ประเภทค่าใช้จ่าย" sortKey="expense_type" currentSort={expenseSort} onSort={handleSort} />
                   <TableHead className="font-semibold text-slate-800">รายละเอียด / หมายเหตุ</TableHead>
-                  <TableHead className="text-right font-semibold text-slate-800">จำนวนเงิน (บาท)</TableHead>
-                  <TableHead className="text-center font-semibold text-slate-800">สถานะ</TableHead>
+                  <SortableHeader title="จำนวนเงิน (บาท)" sortKey="amount" currentSort={expenseSort} onSort={handleSort} align="right" />
+                  <SortableHeader title="สถานะ" sortKey="status" currentSort={expenseSort} onSort={handleSort} align="center" />
                   <TableHead className="text-right font-semibold text-slate-800 print:hidden">จัดการ</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filteredExpenses.length === 0 ? (
+                {sortedExpenses.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={8} className="text-center py-8 text-slate-500 text-xs">
                       ไม่พบรายการค่าใช้จ่ายที่ตรงกับเงื่อนไข
                     </TableCell>
                   </TableRow>
                 ) : (
-                  filteredExpenses.map((exp) => {
+                  sortedExpenses.map((exp) => {
                     const cfg = expenseTypeConfig[exp.expense_type];
                     const Icon = cfg?.icon || Receipt;
                     const truckDisplay = exp.truck_name_id || exp.job?.truck_name_id;

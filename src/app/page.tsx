@@ -45,6 +45,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import { SortableHeader, sortArray, SortState } from '@/components/ui/table-sort';
 
 // Helper labels
 const statusConfig: Record<string, { label: string; badgeClass: string }> = {
@@ -242,6 +243,44 @@ export default function DashboardPage() {
     });
     return Object.values(routeMap);
   }, [filteredJobs]);
+
+  // Table Sorting States
+  const [jobSort, setJobSort] = useState<SortState>({ key: 'job_date', direction: 'desc' });
+  const [routeSort, setRouteSort] = useState<SortState>({ key: 'jobCount', direction: 'desc' });
+
+  const handleJobSort = (key: string) => {
+    setJobSort((prev) => ({
+      key,
+      direction: prev.key === key && prev.direction === 'asc' ? 'desc' : 'asc',
+    }));
+  };
+
+  const handleRouteSort = (key: string) => {
+    setRouteSort((prev) => ({
+      key,
+      direction: prev.key === key && prev.direction === 'asc' ? 'desc' : 'asc',
+    }));
+  };
+
+  const sortedFilteredJobs = useMemo(() => {
+    return sortArray(filteredJobs, jobSort.key, jobSort.direction, (item) => {
+      if (jobSort.key === 'truck') return item.truck_name_id || item.vehicle?.truck_name_id || '';
+      if (jobSort.key === 'customer') return item.customer?.company_name || '';
+      if (jobSort.key === 'container_no') return item.container_no || item.booking_no || item.bl_no || '';
+      if (jobSort.key === 'route') return `${item.origin?.name || ''} ${item.destination?.name || ''}`;
+      if (jobSort.key === 'container_size') return `${item.container_size || ''} ${item.container_type || ''}`;
+      return (item as any)[jobSort.key];
+    });
+  }, [filteredJobs, jobSort]);
+
+  const sortedRouteSummaries = useMemo(() => {
+    return sortArray(routeSummaries, routeSort.key, routeSort.direction, (item) => {
+      if (routeSort.key === 'margin') {
+        return item.totalRevenue > 0 ? (item.netProfit / item.totalRevenue) * 100 : 0;
+      }
+      return (item as any)[routeSort.key];
+    });
+  }, [routeSummaries, routeSort]);
 
   // One-click LINE Job Order Text Generator
   const handleCopyLineText = (job: Job) => {
@@ -781,19 +820,19 @@ ${allowance}
             <Table>
               <TableHeader>
                 <TableRow className="bg-slate-100/80 text-xs">
-                  <TableHead className="font-semibold text-slate-800">Job No / วันที่</TableHead>
-                  <TableHead className="font-semibold text-slate-800">เบอร์รถ & พขร.</TableHead>
-                  <TableHead className="font-semibold text-slate-800">ลูกค้า & สายเรือ</TableHead>
-                  <TableHead className="font-semibold text-slate-800">Booking / B/L / ตู้</TableHead>
-                  <TableHead className="font-semibold text-slate-800">เส้นทาง (ต้นทาง ➔ ปลายทาง)</TableHead>
-                  <TableHead className="text-center font-semibold text-slate-800">สเปกตู้</TableHead>
-                  <TableHead className="text-center font-semibold text-slate-800">สถานะงาน</TableHead>
-                  <TableHead className="text-right font-semibold text-slate-800">ราคาขาย</TableHead>
+                  <SortableHeader title="Job No / วันที่" sortKey="job_date" currentSort={jobSort} onSort={handleJobSort} className="font-semibold text-slate-800" />
+                  <SortableHeader title="เบอร์รถ & พขร." sortKey="truck" currentSort={jobSort} onSort={handleJobSort} className="font-semibold text-slate-800" />
+                  <SortableHeader title="ลูกค้า & สายเรือ" sortKey="customer" currentSort={jobSort} onSort={handleJobSort} className="font-semibold text-slate-800" />
+                  <SortableHeader title="Booking / B/L / ตู้" sortKey="container_no" currentSort={jobSort} onSort={handleJobSort} className="font-semibold text-slate-800" />
+                  <SortableHeader title="เส้นทาง (ต้นทาง ➔ ปลายทาง)" sortKey="route" currentSort={jobSort} onSort={handleJobSort} className="font-semibold text-slate-800" />
+                  <SortableHeader title="สเปกตู้" sortKey="container_size" currentSort={jobSort} onSort={handleJobSort} align="center" className="font-semibold text-slate-800" />
+                  <SortableHeader title="สถานะงาน" sortKey="status" currentSort={jobSort} onSort={handleJobSort} align="center" className="font-semibold text-slate-800" />
+                  <SortableHeader title="ราคาขาย" sortKey="revenue" currentSort={jobSort} onSort={handleJobSort} align="right" className="font-semibold text-slate-800" />
                   <TableHead className="text-center font-semibold text-slate-800 print:hidden">การสั่งงาน</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filteredJobs.length === 0 ? (
+                {sortedFilteredJobs.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={9} className="text-center py-10 text-slate-500">
                       <div className="flex flex-col items-center justify-center space-y-2">
@@ -804,7 +843,7 @@ ${allowance}
                     </TableCell>
                   </TableRow>
                 ) : (
-                  filteredJobs.map((j) => {
+                  sortedFilteredJobs.map((j) => {
                     const truckDisplay = j.truck_name_id || j.vehicle?.truck_name_id;
                     const plateDisplay = j.vehicle?.plate_number;
                     const isCopied = copiedJobId === j.id;
@@ -1002,24 +1041,24 @@ ${allowance}
             <Table>
               <TableHeader>
                 <TableRow className="bg-slate-100/80 text-xs">
-                  <TableHead className="font-semibold text-slate-800">เส้นทาง (ต้นทาง ➔ ปลายทาง)</TableHead>
-                  <TableHead className="text-center font-semibold text-slate-800">จำนวนงาน</TableHead>
-                  <TableHead className="text-right font-semibold text-slate-800">รายได้รวม (บาท)</TableHead>
-                  <TableHead className="text-right font-semibold text-slate-800">ต้นทุนรวม (บาท)</TableHead>
-                  <TableHead className="text-right font-semibold text-slate-800">กำไรสุทธิ (บาท)</TableHead>
-                  <TableHead className="text-center font-semibold text-slate-800">อัตรากำไร (Margin)</TableHead>
+                  <SortableHeader title="เส้นทาง (ต้นทาง ➔ ปลายทาง)" sortKey="routeKey" currentSort={routeSort} onSort={handleRouteSort} className="font-semibold text-slate-800" />
+                  <SortableHeader title="จำนวนงาน" sortKey="jobCount" currentSort={routeSort} onSort={handleRouteSort} align="center" className="font-semibold text-slate-800" />
+                  <SortableHeader title="รายได้รวม (บาท)" sortKey="totalRevenue" currentSort={routeSort} onSort={handleRouteSort} align="right" className="font-semibold text-slate-800" />
+                  <SortableHeader title="ต้นทุนรวม (บาท)" sortKey="totalCost" currentSort={routeSort} onSort={handleRouteSort} align="right" className="font-semibold text-slate-800" />
+                  <SortableHeader title="กำไรสุทธิ (บาท)" sortKey="netProfit" currentSort={routeSort} onSort={handleRouteSort} align="right" className="font-semibold text-slate-800" />
+                  <SortableHeader title="อัตรากำไร (Margin)" sortKey="margin" currentSort={routeSort} onSort={handleRouteSort} align="center" className="font-semibold text-slate-800" />
                   <TableHead className="text-center font-semibold text-slate-800">สถานะ</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {routeSummaries.length === 0 ? (
+                {sortedRouteSummaries.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={7} className="text-center py-6 text-slate-500 text-xs">
                       ยังไม่มีข้อมูลการวิ่งงานในเส้นทางตามเงื่อนไขที่เลือก
                     </TableCell>
                   </TableRow>
                 ) : (
-                  routeSummaries.map((r, idx) => {
+                  sortedRouteSummaries.map((r, idx) => {
                     const margin = r.totalRevenue > 0 ? ((r.netProfit / r.totalRevenue) * 100).toFixed(1) : '0';
                     return (
                       <TableRow key={idx} className="hover:bg-slate-50/80 text-xs">

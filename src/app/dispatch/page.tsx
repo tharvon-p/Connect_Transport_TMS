@@ -1,10 +1,11 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
 import { Job, Vehicle, Driver, RateCard } from '@/types/database';
 import { logActivity } from '@/lib/audit-logger';
 import { useAuth } from '@/lib/auth-context';
+import { SortableHeader, sortArray, SortState } from '@/components/ui/table-sort';
 import { 
   Send, 
   Truck, 
@@ -78,6 +79,27 @@ export default function DispatchPage() {
   const [openPrintModal, setOpenPrintModal] = useState(false);
   const [openPhotoViewerModal, setOpenPhotoViewerModal] = useState(false);
   const [copiedLine, setCopiedLine] = useState(false);
+
+  // Sorting State
+  const [dispatchSort, setDispatchSort] = useState<SortState>({ key: 'job_no', direction: 'desc' });
+  const handleSort = (key: string) => {
+    setDispatchSort(prev => ({
+      key,
+      direction: prev.key === key ? (prev.direction === 'asc' ? 'desc' : 'asc') : 'asc'
+    }));
+  };
+
+  const sortedJobs = useMemo(() => {
+    return sortArray(jobs, dispatchSort.key, dispatchSort.direction, (j) => {
+      if (dispatchSort.key === 'customer') return j.customer?.company_name || '';
+      if (dispatchSort.key === 'route') return `${j.pickup_place || j.origin?.name || ''} ${j.return_place || j.destination?.name || ''}`;
+      if (dispatchSort.key === 'truck') return j.vehicle?.truck_name_id || j.truck_name_id || '';
+      if (dispatchSort.key === 'driver') return j.driver?.name || '';
+      if (dispatchSort.key === 'volume') return `${j.container_amount || 1}x${j.container_size || '40'}`;
+      if (dispatchSort.key === 'profit') return Number(j.net_profit || 0);
+      return (j as any)[dispatchSort.key];
+    });
+  }, [jobs, dispatchSort]);
 
   // Assignment Form State (Truck auto-pairs with Driver)
   const [assignForm, setAssignForm] = useState({
@@ -446,20 +468,20 @@ export default function DispatchPage() {
                 <Table>
                   <TableHeader>
                     <TableRow className="bg-slate-100/70 text-xs">
-                      <TableHead className="font-bold text-blue-900">Job ID</TableHead>
-                      <TableHead className="font-bold">วันที่</TableHead>
-                      <TableHead className="font-bold">ลูกค้า / สายเรือ</TableHead>
-                      <TableHead className="font-bold">เส้นทาง 3 จุด</TableHead>
-                      <TableHead className="font-bold text-center">สเปกตู้</TableHead>
-                      <TableHead className="font-bold text-blue-950">รถที่มอบหมาย</TableHead>
-                      <TableHead className="font-bold text-slate-900">พขร. ประจำรถ</TableHead>
-                      <TableHead>สถานะ</TableHead>
-                      <TableHead className="text-right">ต้นทุน / กำไร</TableHead>
+                      <SortableHeader title="Job ID" sortKey="job_no" currentSort={dispatchSort} onSort={handleSort} className="font-bold text-blue-900" />
+                      <SortableHeader title="วันที่" sortKey="job_date" currentSort={dispatchSort} onSort={handleSort} />
+                      <SortableHeader title="ลูกค้า / สายเรือ" sortKey="customer" currentSort={dispatchSort} onSort={handleSort} />
+                      <SortableHeader title="เส้นทาง 3 จุด" sortKey="route" currentSort={dispatchSort} onSort={handleSort} />
+                      <SortableHeader title="สเปกตู้" sortKey="volume" currentSort={dispatchSort} onSort={handleSort} align="center" />
+                      <SortableHeader title="รถที่มอบหมาย" sortKey="truck" currentSort={dispatchSort} onSort={handleSort} className="text-blue-950" />
+                      <SortableHeader title="พขร. ประจำรถ" sortKey="driver" currentSort={dispatchSort} onSort={handleSort} className="text-slate-900" />
+                      <SortableHeader title="สถานะ" sortKey="status" currentSort={dispatchSort} onSort={handleSort} />
+                      <SortableHeader title="ต้นทุน / กำไร" sortKey="profit" currentSort={dispatchSort} onSort={handleSort} align="right" />
                       <TableHead className="text-right">จัดการงาน</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {jobs.map((j) => (
+                    {sortedJobs.map((j) => (
                       <TableRow key={j.id} className="hover:bg-slate-50/80 text-xs">
                         <TableCell className="font-bold text-blue-700 font-mono">{j.job_no}</TableCell>
                         <TableCell className="text-slate-600">{j.job_date}</TableCell>

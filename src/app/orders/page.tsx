@@ -1,11 +1,12 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { Customer, Location, RateCard, Job, JobType, JobStatus, ContainerSize, ContainerType, CargoType, VehicleType } from '@/types/database';
 import { logActivity } from '@/lib/audit-logger';
 import { useAuth } from '@/lib/auth-context';
+import { SortableHeader, sortArray, SortState } from '@/components/ui/table-sort';
 import { 
   ClipboardList, 
   Plus, 
@@ -119,6 +120,15 @@ export default function OrdersPage() {
   // Search and Filter states
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
+
+  // Sorting State
+  const [orderSort, setOrderSort] = useState<SortState>({ key: 'job_no', direction: 'desc' });
+  const handleSort = (key: string) => {
+    setOrderSort(prev => ({
+      key,
+      direction: prev.key === key ? (prev.direction === 'asc' ? 'desc' : 'asc') : 'asc'
+    }));
+  };
 
   // Modal State
   const [openOrderModal, setOpenOrderModal] = useState(false);
@@ -469,6 +479,18 @@ export default function OrdersPage() {
     return matchSearch && matchStatus;
   });
 
+  // Sorted filtered jobs
+  const sortedJobs = useMemo(() => {
+    return sortArray(filteredJobs, orderSort.key, orderSort.direction, (j) => {
+      if (orderSort.key === 'customer') return j.customer?.company_name || '';
+      if (orderSort.key === 'booking_no') return j.book_no || j.booking_no || '';
+      if (orderSort.key === 'route') return `${j.pickup_place || j.origin?.name || ''} ${j.return_place || j.destination?.name || ''}`;
+      if (orderSort.key === 'volume') return `${j.container_amount || 1}x${j.container_size || '40'}`;
+      if (orderSort.key === 'revenue') return Number(j.revenue || 0);
+      return (j as any)[orderSort.key];
+    });
+  }, [filteredJobs, orderSort]);
+
   return (
     <div className="p-6 md:p-8 space-y-6 bg-slate-50 min-h-screen">
       {/* Header */}
@@ -509,7 +531,7 @@ export default function OrdersPage() {
       <Card className="border-slate-200 shadow-sm">
         <CardHeader className="flex flex-col md:flex-row md:items-center justify-between pb-4 gap-4">
           <div>
-            <CardTitle className="text-base font-bold">รายการคำสั่งงานขนส่งทั้งหมด ({filteredJobs.length})</CardTitle>
+            <CardTitle className="text-base font-bold">รายการคำสั่งงานขนส่งทั้งหมด ({sortedJobs.length})</CardTitle>
             <CardDescription>
               รายการงานนำเข้า/ส่งออก, สเปกตู้, เส้นทาง 3 จุด, ติดตามเลข Invoice No. และสถานะการเปลี่ยนใบเสร็จท่าเรือ PAT
             </CardDescription>
@@ -546,28 +568,28 @@ export default function OrdersPage() {
             <Table>
               <TableHeader>
                 <TableRow className="bg-slate-100/70 text-xs">
-                  <TableHead className="font-bold text-blue-900">Job ID</TableHead>
-                  <TableHead className="font-bold">วันที่วิ่งงาน</TableHead>
-                  <TableHead className="font-bold">ลูกค้า / สายเรือ</TableHead>
-                  <TableHead>Booking / B/L No.</TableHead>
-                  <TableHead className="font-bold">เส้นทาง 3 จุด (รับตู้ ➔ บรรจุ ➔ คืนตู้)</TableHead>
-                  <TableHead className="font-bold text-center">Volume / สเปก</TableHead>
-                  <TableHead className="text-center font-bold text-purple-900">Invoice No.</TableHead>
-                  <TableHead>สถานะงาน</TableHead>
+                  <SortableHeader title="Job ID" sortKey="job_no" currentSort={orderSort} onSort={handleSort} className="font-bold text-blue-900" />
+                  <SortableHeader title="วันที่วิ่งงาน" sortKey="job_date" currentSort={orderSort} onSort={handleSort} />
+                  <SortableHeader title="ลูกค้า / สายเรือ" sortKey="customer" currentSort={orderSort} onSort={handleSort} />
+                  <SortableHeader title="Booking / B/L No." sortKey="booking_no" currentSort={orderSort} onSort={handleSort} />
+                  <SortableHeader title="เส้นทาง 3 จุด" sortKey="route" currentSort={orderSort} onSort={handleSort} />
+                  <SortableHeader title="Volume / สเปก" sortKey="volume" currentSort={orderSort} onSort={handleSort} align="center" />
+                  <SortableHeader title="Invoice No." sortKey="invoice_no" currentSort={orderSort} onSort={handleSort} align="center" className="text-purple-900" />
+                  <SortableHeader title="สถานะงาน" sortKey="status" currentSort={orderSort} onSort={handleSort} />
                   <TableHead>จดหมายท่าเรือ (PAT)</TableHead>
-                  <TableHead className="text-right font-bold text-emerald-800">ราคาเรียกเก็บ</TableHead>
+                  <SortableHeader title="ราคาเรียกเก็บ" sortKey="revenue" currentSort={orderSort} onSort={handleSort} align="right" className="font-bold text-emerald-800" />
                   <TableHead className="text-right">จัดการ</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filteredJobs.length === 0 ? (
+                {sortedJobs.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={11} className="text-center py-8 text-slate-500">
                       ไม่พบข้อมูลงานขนส่งที่ตรงกับเงื่อนไขการค้นหา
                     </TableCell>
                   </TableRow>
                 ) : (
-                  filteredJobs.map((j) => {
+                  sortedJobs.map((j) => {
                     const volumeStr = `${j.container_amount || 1}x${j.container_size || '40'}' ${j.container_type || 'HC'}`;
                     return (
                       <TableRow key={j.id} className="hover:bg-slate-50/80 text-xs">

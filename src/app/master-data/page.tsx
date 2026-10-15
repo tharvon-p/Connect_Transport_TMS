@@ -1,10 +1,11 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
 import { Vehicle, Driver, Customer, Location, RateCard, VehicleType, ContainerSize, ContainerType, LocationType } from '@/types/database';
 import { logActivity } from '@/lib/audit-logger';
 import { useAuth } from '@/lib/auth-context';
+import { SortableHeader, sortArray, SortState } from '@/components/ui/table-sort';
 import { 
   Truck, 
   Users, 
@@ -96,6 +97,60 @@ export default function MasterDataPage() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [locations, setLocations] = useState<Location[]>([]);
   const [rateCards, setRateCards] = useState<RateCard[]>([]);
+
+  // Sorting States
+  const [vehicleSort, setVehicleSort] = useState<SortState>({ key: 'truck_name_id', direction: 'asc' });
+  const [driverSort, setDriverSort] = useState<SortState>({ key: 'name', direction: 'asc' });
+  const [customerSort, setCustomerSort] = useState<SortState>({ key: 'company_name', direction: 'asc' });
+  const [locationSort, setLocationSort] = useState<SortState>({ key: 'name', direction: 'asc' });
+  const [rateCardSort, setRateCardSort] = useState<SortState>({ key: 'base_price', direction: 'desc' });
+
+  const handleSort = (
+    key: string,
+    currentSort: SortState,
+    setSort: React.Dispatch<React.SetStateAction<SortState>>
+  ) => {
+    if (currentSort.key === key) {
+      setSort({ key, direction: currentSort.direction === 'asc' ? 'desc' : 'asc' });
+    } else {
+      setSort({ key, direction: 'asc' });
+    }
+  };
+
+  // Memoized Sorted Arrays
+  const sortedVehicles = useMemo(() => {
+    return sortArray(vehicles, vehicleSort.key, vehicleSort.direction, (v) => {
+      if (vehicleSort.key === 'driver') return v.driver?.name || '';
+      if (vehicleSort.key === 'truck_brand') return `${v.truck_brand || ''} ${v.truck_model || ''}`;
+      return (v as any)[vehicleSort.key];
+    });
+  }, [vehicles, vehicleSort]);
+
+  const sortedDrivers = useMemo(() => {
+    return sortArray(drivers, driverSort.key, driverSort.direction);
+  }, [drivers, driverSort]);
+
+  const sortedCustomers = useMemo(() => {
+    return sortArray(customers, customerSort.key, customerSort.direction);
+  }, [customers, customerSort]);
+
+  const sortedLocations = useMemo(() => {
+    return sortArray(locations, locationSort.key, locationSort.direction);
+  }, [locations, locationSort]);
+
+  const sortedRateCards = useMemo(() => {
+    return sortArray(rateCards, rateCardSort.key, rateCardSort.direction, (r) => {
+      if (rateCardSort.key === 'customer') return r.customer?.company_name || '';
+      if (rateCardSort.key === 'origin') return r.origin?.name || '';
+      if (rateCardSort.key === 'destination') return r.destination?.name || '';
+      if (rateCardSort.key === 'cost') return Number(r.fuel_cost_est || 0) + Number(r.toll_fee_est || 0) + Number(r.driver_fee_est || 0);
+      if (rateCardSort.key === 'profit') {
+        const totalCost = Number(r.fuel_cost_est || 0) + Number(r.toll_fee_est || 0) + Number(r.driver_fee_est || 0);
+        return Number(r.base_price || 0) - totalCost;
+      }
+      return (r as any)[rateCardSort.key];
+    });
+  }, [rateCards, rateCardSort]);
 
   // Dialog States
   const [openVehicleModal, setOpenVehicleModal] = useState(false);
@@ -834,28 +889,28 @@ export default function MasterDataPage() {
               <div className="rounded-md border overflow-x-auto">
                 <Table>
                   <TableHeader>
-                    <TableRow className="bg-slate-50">
-                      <TableHead className="font-bold text-blue-900">รหัสรถย่อ</TableHead>
-                      <TableHead className="font-bold">ป้ายทะเบียน</TableHead>
-                      <TableHead>ยี่ห้อ / รุ่น / ปี</TableHead>
-                      <TableHead className="font-bold text-slate-900">คนขับประจำรถ</TableHead>
-                      <TableHead>ชนิดรถ</TableHead>
-                      <TableHead>ภาษีป้ายวงกลม</TableHead>
-                      <TableHead>พรบ. ขนส่ง</TableHead>
-                      <TableHead>ประกันภัย</TableHead>
-                      <TableHead>สถานะ</TableHead>
+                    <TableRow className="bg-slate-100/80">
+                      <SortableHeader title="รหัสรถย่อ" sortKey="truck_name_id" currentSort={vehicleSort} onSort={(k) => handleSort(k, vehicleSort, setVehicleSort)} className="font-bold text-blue-900" />
+                      <SortableHeader title="ป้ายทะเบียน" sortKey="plate_number" currentSort={vehicleSort} onSort={(k) => handleSort(k, vehicleSort, setVehicleSort)} />
+                      <SortableHeader title="ยี่ห้อ / รุ่น / ปี" sortKey="truck_brand" currentSort={vehicleSort} onSort={(k) => handleSort(k, vehicleSort, setVehicleSort)} />
+                      <SortableHeader title="คนขับประจำรถ" sortKey="driver" currentSort={vehicleSort} onSort={(k) => handleSort(k, vehicleSort, setVehicleSort)} />
+                      <SortableHeader title="ชนิดรถ" sortKey="vehicle_type" currentSort={vehicleSort} onSort={(k) => handleSort(k, vehicleSort, setVehicleSort)} />
+                      <SortableHeader title="ภาษีป้ายวงกลม" sortKey="tax_expiry_date" currentSort={vehicleSort} onSort={(k) => handleSort(k, vehicleSort, setVehicleSort)} />
+                      <SortableHeader title="พรบ. ขนส่ง" sortKey="act_expiry_date" currentSort={vehicleSort} onSort={(k) => handleSort(k, vehicleSort, setVehicleSort)} />
+                      <SortableHeader title="ประกันภัย" sortKey="insurance_expiry_date" currentSort={vehicleSort} onSort={(k) => handleSort(k, vehicleSort, setVehicleSort)} />
+                      <SortableHeader title="สถานะ" sortKey="status" currentSort={vehicleSort} onSort={(k) => handleSort(k, vehicleSort, setVehicleSort)} />
                       <TableHead className="text-right">จัดการ</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {vehicles.length === 0 ? (
+                    {sortedVehicles.length === 0 ? (
                       <TableRow>
                         <TableCell colSpan={10} className="text-center py-6 text-slate-500">
                           ไม่พบข้อมูลรถบรรทุกในระบบ
                         </TableCell>
                       </TableRow>
                     ) : (
-                      vehicles.map((v, idx) => (
+                      sortedVehicles.map((v, idx) => (
                         <TableRow key={v.id} className="hover:bg-slate-50">
                           <TableCell className="font-bold">
                             <span className="px-2.5 py-1 bg-blue-50 text-blue-700 rounded-md border border-blue-200 text-xs font-mono">
@@ -949,26 +1004,26 @@ export default function MasterDataPage() {
               <div className="rounded-md border overflow-x-auto">
                 <Table>
                   <TableHeader>
-                    <TableRow className="bg-slate-50">
-                      <TableHead className="font-bold">ชื่อ - นามสกุล</TableHead>
-                      <TableHead>เบอร์โทรศัพท์</TableHead>
-                      <TableHead>เลขบัตรประชาชน (13 หลัก)</TableHead>
-                      <TableHead>เลขที่ใบขับขี่</TableHead>
-                      <TableHead>วันหมดอายุใบขับขี่</TableHead>
-                      <TableHead className="text-right">เบี้ยเลี้ยงพื้นฐาน</TableHead>
-                      <TableHead>สถานะ</TableHead>
+                    <TableRow className="bg-slate-100/80">
+                      <SortableHeader title="ชื่อ - นามสกุล" sortKey="name" currentSort={driverSort} onSort={(k) => handleSort(k, driverSort, setDriverSort)} className="font-bold text-blue-900" />
+                      <SortableHeader title="เบอร์โทรศัพท์" sortKey="phone" currentSort={driverSort} onSort={(k) => handleSort(k, driverSort, setDriverSort)} />
+                      <SortableHeader title="เลขบัตรประชาชน (13 หลัก)" sortKey="id_number" currentSort={driverSort} onSort={(k) => handleSort(k, driverSort, setDriverSort)} />
+                      <SortableHeader title="เลขที่ใบขับขี่" sortKey="license_number" currentSort={driverSort} onSort={(k) => handleSort(k, driverSort, setDriverSort)} />
+                      <SortableHeader title="วันหมดอายุใบขับขี่" sortKey="license_expiry_date" currentSort={driverSort} onSort={(k) => handleSort(k, driverSort, setDriverSort)} />
+                      <SortableHeader title="เบี้ยเลี้ยงพื้นฐาน" sortKey="daily_rate" currentSort={driverSort} onSort={(k) => handleSort(k, driverSort, setDriverSort)} align="right" />
+                      <SortableHeader title="สถานะ" sortKey="status" currentSort={driverSort} onSort={(k) => handleSort(k, driverSort, setDriverSort)} />
                       <TableHead className="text-right">จัดการ</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {drivers.length === 0 ? (
+                    {sortedDrivers.length === 0 ? (
                       <TableRow>
                         <TableCell colSpan={8} className="text-center py-6 text-slate-500">
                           ไม่พบข้อมูลพนักงานขับรถ
                         </TableCell>
                       </TableRow>
                     ) : (
-                      drivers.map((d) => (
+                      sortedDrivers.map((d) => (
                         <TableRow key={d.id} className="hover:bg-slate-50">
                           <TableCell className="font-semibold text-slate-900">{d.name}</TableCell>
                           <TableCell className="text-xs text-slate-600">{d.phone || '-'}</TableCell>
@@ -1036,26 +1091,26 @@ export default function MasterDataPage() {
               <div className="rounded-md border overflow-x-auto">
                 <Table>
                   <TableHeader>
-                    <TableRow className="bg-slate-50">
-                      <TableHead className="font-bold">ชื่อบริษัทลูกค้า</TableHead>
-                      <TableHead>สาขา</TableHead>
-                      <TableHead>เลขผู้เสียภาษี (13 หลัก)</TableHead>
-                      <TableHead>เครดิตเทอม</TableHead>
-                      <TableHead>ผู้ติดต่อ / โทรศัพท์</TableHead>
-                      <TableHead>Shipper ประจำ</TableHead>
-                      <TableHead>สินค้าประจำ</TableHead>
+                    <TableRow className="bg-slate-100/80">
+                      <SortableHeader title="ชื่อบริษัทลูกค้า" sortKey="company_name" currentSort={customerSort} onSort={(k) => handleSort(k, customerSort, setCustomerSort)} className="font-bold text-blue-900" />
+                      <SortableHeader title="สาขา" sortKey="branch" currentSort={customerSort} onSort={(k) => handleSort(k, customerSort, setCustomerSort)} />
+                      <SortableHeader title="เลขผู้เสียภาษี (13 หลัก)" sortKey="tax_id" currentSort={customerSort} onSort={(k) => handleSort(k, customerSort, setCustomerSort)} />
+                      <SortableHeader title="เครดิตเทอม" sortKey="credit_term_days" currentSort={customerSort} onSort={(k) => handleSort(k, customerSort, setCustomerSort)} />
+                      <SortableHeader title="ผู้ติดต่อ / โทรศัพท์" sortKey="contact_name" currentSort={customerSort} onSort={(k) => handleSort(k, customerSort, setCustomerSort)} />
+                      <SortableHeader title="Shipper ประจำ" sortKey="shipper_name" currentSort={customerSort} onSort={(k) => handleSort(k, customerSort, setCustomerSort)} />
+                      <SortableHeader title="สินค้าประจำ" sortKey="commodity_name" currentSort={customerSort} onSort={(k) => handleSort(k, customerSort, setCustomerSort)} />
                       <TableHead className="text-right">จัดการ</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {customers.length === 0 ? (
+                    {sortedCustomers.length === 0 ? (
                       <TableRow>
                         <TableCell colSpan={8} className="text-center py-6 text-slate-500">
                           ไม่พบข้อมูลลูกค้า
                         </TableCell>
                       </TableRow>
                     ) : (
-                      customers.map((c) => (
+                      sortedCustomers.map((c) => (
                         <TableRow key={c.id} className="hover:bg-slate-50">
                           <TableCell className="font-semibold text-slate-900">
                             <div>{c.company_name}</div>
@@ -1125,25 +1180,25 @@ export default function MasterDataPage() {
               <div className="rounded-md border overflow-x-auto">
                 <Table>
                   <TableHeader>
-                    <TableRow className="bg-slate-50">
-                      <TableHead className="font-bold">ชื่อสถานที่</TableHead>
-                      <TableHead>ประเภท</TableHead>
-                      <TableHead>จังหวัด</TableHead>
-                      <TableHead>ผู้ประสานงาน / เบอร์โทร</TableHead>
+                    <TableRow className="bg-slate-100/80">
+                      <SortableHeader title="ชื่อสถานที่" sortKey="name" currentSort={locationSort} onSort={(k) => handleSort(k, locationSort, setLocationSort)} className="font-bold text-blue-900" />
+                      <SortableHeader title="ประเภท" sortKey="location_type" currentSort={locationSort} onSort={(k) => handleSort(k, locationSort, setLocationSort)} />
+                      <SortableHeader title="จังหวัด" sortKey="province" currentSort={locationSort} onSort={(k) => handleSort(k, locationSort, setLocationSort)} />
+                      <SortableHeader title="ผู้ประสานงาน / เบอร์โทร" sortKey="contact_name" currentSort={locationSort} onSort={(k) => handleSort(k, locationSort, setLocationSort)} />
                       <TableHead>พิกัด GPS / แผนที่</TableHead>
                       <TableHead>จุดสังเกตหน้างาน</TableHead>
                       <TableHead className="text-right">จัดการ</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {locations.length === 0 ? (
+                    {sortedLocations.length === 0 ? (
                       <TableRow>
                         <TableCell colSpan={7} className="text-center py-6 text-slate-500">
                           ไม่พบข้อมูลสถานที่
                         </TableCell>
                       </TableRow>
                     ) : (
-                      locations.map((l) => (
+                      sortedLocations.map((l) => (
                         <TableRow key={l.id} className="hover:bg-slate-50">
                           <TableCell className="font-semibold text-slate-900">
                             <div>{l.name}</div>
@@ -1221,26 +1276,26 @@ export default function MasterDataPage() {
               <div className="rounded-md border overflow-x-auto">
                 <Table>
                   <TableHeader>
-                    <TableRow className="bg-slate-50">
-                      <TableHead className="font-bold">ลูกค้า</TableHead>
-                      <TableHead className="font-bold">คู่เส้นทาง (ต้นทาง ➔ ปลายทาง)</TableHead>
-                      <TableHead>สเปกตู้</TableHead>
-                      <TableHead>ชนิดรถ</TableHead>
-                      <TableHead className="text-right font-bold text-blue-900">ราคาขาย (บาท)</TableHead>
-                      <TableHead className="text-right">ต้นทุนประมาณการ</TableHead>
-                      <TableHead className="text-right font-bold text-emerald-800">กำไรสุทธิ</TableHead>
+                    <TableRow className="bg-slate-100/80">
+                      <SortableHeader title="ลูกค้า" sortKey="customer" currentSort={rateCardSort} onSort={(k) => handleSort(k, rateCardSort, setRateCardSort)} className="font-bold text-blue-900" />
+                      <SortableHeader title="คู่เส้นทาง (ต้นทาง ➔ ปลายทาง)" sortKey="origin" currentSort={rateCardSort} onSort={(k) => handleSort(k, rateCardSort, setRateCardSort)} />
+                      <SortableHeader title="สเปกตู้" sortKey="container_size" currentSort={rateCardSort} onSort={(k) => handleSort(k, rateCardSort, setRateCardSort)} />
+                      <SortableHeader title="ชนิดรถ" sortKey="vehicle_type" currentSort={rateCardSort} onSort={(k) => handleSort(k, rateCardSort, setRateCardSort)} />
+                      <SortableHeader title="ราคาขาย (บาท)" sortKey="base_price" currentSort={rateCardSort} onSort={(k) => handleSort(k, rateCardSort, setRateCardSort)} align="right" />
+                      <SortableHeader title="ต้นทุนประมาณการ" sortKey="cost" currentSort={rateCardSort} onSort={(k) => handleSort(k, rateCardSort, setRateCardSort)} align="right" />
+                      <SortableHeader title="กำไรสุทธิ" sortKey="profit" currentSort={rateCardSort} onSort={(k) => handleSort(k, rateCardSort, setRateCardSort)} align="right" />
                       <TableHead className="text-right">จัดการ</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {rateCards.length === 0 ? (
+                    {sortedRateCards.length === 0 ? (
                       <TableRow>
                         <TableCell colSpan={8} className="text-center py-6 text-slate-500">
                           ไม่พบข้อมูลเรทราคา
                         </TableCell>
                       </TableRow>
                     ) : (
-                      rateCards.map((r) => {
+                      sortedRateCards.map((r) => {
                         const totalCost = Number(r.fuel_cost_est || 0) + Number(r.toll_fee_est || 0) + Number(r.driver_fee_est || 0);
                         const profit = Number(r.base_price || 0) - totalCost;
                         return (

@@ -1,10 +1,11 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
 import { Job, Customer } from '@/types/database';
 import { logActivity } from '@/lib/audit-logger';
 import { useAuth } from '@/lib/auth-context';
+import { SortableHeader, sortArray, SortState } from '@/components/ui/table-sort';
 import { 
   ReceiptText, 
   FileText, 
@@ -306,6 +307,39 @@ export default function InvoicingPage() {
   // Filter Jobs
   const patJobs = jobs.filter((j) => j.pat_letter_required);
 
+  // Table Sorting States
+  const [invoiceSort, setInvoiceSort] = useState<SortState>({ key: 'job_date', direction: 'desc' });
+  const [patSort, setPatSort] = useState<SortState>({ key: 'job_date', direction: 'desc' });
+
+  const handleInvoiceSort = (key: string) => {
+    setInvoiceSort((prev) => ({
+      key,
+      direction: prev.key === key && prev.direction === 'asc' ? 'desc' : 'asc',
+    }));
+  };
+
+  const handlePatSort = (key: string) => {
+    setPatSort((prev) => ({
+      key,
+      direction: prev.key === key && prev.direction === 'asc' ? 'desc' : 'asc',
+    }));
+  };
+
+  const sortedJobs = useMemo(() => {
+    return sortArray(jobs, invoiceSort.key, invoiceSort.direction, (item) => {
+      if (invoiceSort.key === 'customer') return item.customer?.company_name || '';
+      return (item as any)[invoiceSort.key];
+    });
+  }, [jobs, invoiceSort]);
+
+  const sortedPatJobs = useMemo(() => {
+    return sortArray(patJobs, patSort.key, patSort.direction, (item) => {
+      if (patSort.key === 'customer') return item.customer?.company_name || '';
+      if (patSort.key === 'tax_id') return item.customer?.tax_id || '';
+      return (item as any)[patSort.key];
+    });
+  }, [patJobs, patSort]);
+
   // Financial Metrics
   const totalBilled = jobs.reduce((s, j) => s + Number(j.revenue || 0), 0);
   const totalCosts = jobs.reduce((s, j) => s + Number(j.total_cost || 0), 0);
@@ -422,19 +456,19 @@ export default function InvoicingPage() {
                 <Table>
                   <TableHeader>
                     <TableRow className="bg-slate-100/70 text-xs">
-                      <TableHead className="font-bold text-blue-900">Job ID</TableHead>
-                      <TableHead className="font-bold">วันที่วิ่งงาน</TableHead>
-                      <TableHead className="font-bold">ลูกค้าผู้ว่าจ้าง</TableHead>
-                      <TableHead className="font-bold text-purple-900">Invoice No.</TableHead>
-                      <TableHead>หมายเลขตู้ / ซีล</TableHead>
-                      <TableHead>สถานะงาน</TableHead>
-                      <TableHead className="text-right font-bold text-slate-900">ยอดเรียกเก็บ (บาท)</TableHead>
-                      <TableHead className="text-right font-bold text-emerald-800">กำไรสุทธิ</TableHead>
-                      <TableHead className="text-center">จัดการบิล</TableHead>
+                      <SortableHeader title="Job ID" sortKey="job_no" currentSort={invoiceSort} onSort={handleInvoiceSort} className="font-bold text-blue-900" />
+                      <SortableHeader title="วันที่วิ่งงาน" sortKey="job_date" currentSort={invoiceSort} onSort={handleInvoiceSort} className="font-bold" />
+                      <SortableHeader title="ลูกค้าผู้ว่าจ้าง" sortKey="customer" currentSort={invoiceSort} onSort={handleInvoiceSort} className="font-bold" />
+                      <SortableHeader title="Invoice No." sortKey="invoice_no" currentSort={invoiceSort} onSort={handleInvoiceSort} className="font-bold text-purple-900" />
+                      <SortableHeader title="หมายเลขตู้ / ซีล" sortKey="container_no" currentSort={invoiceSort} onSort={handleInvoiceSort} />
+                      <SortableHeader title="สถานะงาน" sortKey="status" currentSort={invoiceSort} onSort={handleInvoiceSort} />
+                      <SortableHeader title="ยอดเรียกเก็บ (บาท)" sortKey="revenue" currentSort={invoiceSort} onSort={handleInvoiceSort} align="right" className="font-bold text-slate-900" />
+                      <SortableHeader title="กำไรสุทธิ" sortKey="net_profit" currentSort={invoiceSort} onSort={handleInvoiceSort} align="right" className="font-bold text-emerald-800" />
+                      <TableHead className="text-center font-bold">จัดการบิล</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {jobs.map((j) => (
+                    {sortedJobs.map((j) => (
                       <TableRow key={j.id} className="hover:bg-slate-50/80 text-xs">
                         <TableCell className="font-bold text-blue-700 font-mono whitespace-nowrap">
                           {j.job_no}
@@ -539,17 +573,17 @@ export default function InvoicingPage() {
                 <Table>
                   <TableHeader>
                     <TableRow className="bg-slate-100/70 text-xs">
-                      <TableHead className="font-bold text-blue-900">Job ID</TableHead>
-                      <TableHead className="font-bold">วันที่</TableHead>
-                      <TableHead className="font-bold">บริษัทลูกค้า (ผู้ออกใบเสร็จใหม่)</TableHead>
-                      <TableHead>เลขประจำตัวผู้เสียภาษี</TableHead>
-                      <TableHead>เลขตู้คอนเทนเนอร์</TableHead>
-                      <TableHead>สถานะจดหมาย PAT</TableHead>
+                      <SortableHeader title="Job ID" sortKey="job_no" currentSort={patSort} onSort={handlePatSort} className="font-bold text-blue-900" />
+                      <SortableHeader title="วันที่" sortKey="job_date" currentSort={patSort} onSort={handlePatSort} className="font-bold" />
+                      <SortableHeader title="บริษัทลูกค้า (ผู้ออกใบเสร็จใหม่)" sortKey="customer" currentSort={patSort} onSort={handlePatSort} className="font-bold" />
+                      <SortableHeader title="เลขประจำตัวผู้เสียภาษี" sortKey="tax_id" currentSort={patSort} onSort={handlePatSort} />
+                      <SortableHeader title="เลขตู้คอนเทนเนอร์" sortKey="container_no" currentSort={patSort} onSort={handlePatSort} />
+                      <SortableHeader title="สถานะจดหมาย PAT" sortKey="pat_letter_status" currentSort={patSort} onSort={handlePatSort} />
                       <TableHead className="text-center font-semibold">การดำเนินการ</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {patJobs.map((j) => (
+                    {sortedPatJobs.map((j) => (
                       <TableRow key={j.id} className="hover:bg-slate-50/80 text-xs">
                         <TableCell className="font-bold text-blue-700 font-mono">{j.job_no}</TableCell>
                         <TableCell className="text-slate-600">{j.job_date}</TableCell>

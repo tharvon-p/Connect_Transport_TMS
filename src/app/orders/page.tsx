@@ -11,6 +11,7 @@ import {
   ClipboardList, 
   Plus, 
   Trash2, 
+  Edit3,
   RefreshCw, 
   Search, 
   Filter, 
@@ -132,6 +133,7 @@ export default function OrdersPage() {
 
   // Modal State
   const [openOrderModal, setOpenOrderModal] = useState(false);
+  const [editOrderId, setEditOrderId] = useState<string | null>(null);
 
   // Form State
   const [formData, setFormData] = useState({
@@ -220,6 +222,7 @@ export default function OrdersPage() {
 
   // Open Create Modal
   const handleOpenCreateModal = () => {
+    setEditOrderId(null);
     const nextNo = generateNextJobNo();
     const today = new Date().toISOString().split('T')[0];
     const defaultCust = customers[0];
@@ -259,6 +262,49 @@ export default function OrdersPage() {
 
       pat_letter_required: defaultDest.includes('PAT') || defaultDest.includes('คลองเตย'),
       notes: '',
+    });
+
+    setSelectedRateCardId('');
+    setRateCardMatchNote(null);
+    setOpenOrderModal(true);
+  };
+
+  // Open Edit / Revise Modal
+  const handleOpenEditModal = (job: Job) => {
+    setEditOrderId(job.id);
+    setFormData({
+      job_no: job.job_no || '',
+      job_date: job.job_date || '',
+      job_type: (job.job_type as JobType) || 'heavy_to_open',
+      customer_id: job.customer_id || '',
+      shipper_name: job.shipper_name || '',
+      ship_line: job.ship_line || 'Evergreen',
+      bl_no: job.bl_no || '',
+      book_no: job.book_no || '',
+      commodity_name: job.commodity_name || '',
+
+      pickup_place: job.pickup_place || job.origin?.name || '',
+      pickup_date: job.pickup_date || job.job_date || '',
+      packing_place: job.packing_place || '',
+      packing_date: job.packing_date || job.job_date || '',
+      return_place: job.return_place || job.destination?.name || '',
+      return_date: job.return_date || job.job_date || '',
+
+      origin_id: job.origin_id || '',
+      destination_id: job.destination_id || '',
+      vehicle_type: job.vehicle_type || 'trailer',
+      container_size: (job.container_size as ContainerSize) || '40',
+      container_type: (job.container_type as ContainerType) || 'HC',
+      container_amount: String(job.container_amount || 1),
+      cargo_type: (job.cargo_type as CargoType) || 'NON_DG',
+      status: (job.status as JobStatus) || 'draft',
+
+      price: String(job.price ?? '5500'),
+      addon_price: String(job.addon_price ?? '0'),
+      revenue: String(job.revenue ?? '5500'),
+
+      pat_letter_required: Boolean(job.pat_letter_required),
+      notes: job.driver_notes || '',
     });
 
     setSelectedRateCardId('');
@@ -332,7 +378,7 @@ export default function OrdersPage() {
     }));
   };
 
-  // Submit new Order
+  // Submit new Order or Edit/Revise existing Order
   const handleCreateOrder = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.customer_id) {
@@ -352,66 +398,93 @@ export default function OrdersPage() {
     const totalCostEst = fuelEst + driverEst + tollEst;
     const netProfitEst = totalRev - totalCostEst;
 
-    const { error } = await supabase.from('jobs').insert([
-      {
-        job_no: formData.job_no,
-        job_date: formData.job_date,
-        job_type: formData.job_type,
-        customer_id: formData.customer_id,
-        shipper_name: formData.shipper_name || null,
-        ship_line: formData.ship_line || null,
-        bl_no: formData.bl_no || null,
-        book_no: formData.book_no || null,
-        commodity_name: formData.commodity_name || null,
+    const basePayload = {
+      job_no: formData.job_no,
+      job_date: formData.job_date,
+      job_type: formData.job_type,
+      customer_id: formData.customer_id,
+      shipper_name: formData.shipper_name || null,
+      ship_line: formData.ship_line || null,
+      bl_no: formData.bl_no || null,
+      book_no: formData.book_no || null,
+      commodity_name: formData.commodity_name || null,
 
-        pickup_place: formData.pickup_place || null,
-        pickup_date: formData.pickup_date || null,
-        packing_place: formData.packing_place || null,
-        packing_date: formData.packing_date || null,
-        return_place: formData.return_place || null,
-        return_date: formData.return_date || null,
+      pickup_place: formData.pickup_place || null,
+      pickup_date: formData.pickup_date || null,
+      packing_place: formData.packing_place || null,
+      packing_date: formData.packing_date || null,
+      return_place: formData.return_place || null,
+      return_date: formData.return_date || null,
 
-        origin_id: formData.origin_id || null,
-        destination_id: formData.destination_id || null,
-        vehicle_type: formData.vehicle_type,
-        container_size: formData.container_size,
-        container_type: formData.container_type,
-        container_amount: amount,
-        cargo_type: formData.cargo_type,
-        status: formData.status,
+      origin_id: formData.origin_id || null,
+      destination_id: formData.destination_id || null,
+      vehicle_type: formData.vehicle_type,
+      container_size: formData.container_size,
+      container_type: formData.container_type,
+      container_amount: amount,
+      cargo_type: formData.cargo_type,
+      status: formData.status,
 
-        price: price,
-        addon_price: addon,
-        revenue: totalRev,
-        fuel_cost: fuelEst,
-        driver_allowance: driverEst,
-        toll_fee: tollEst,
-        waiting_fee: 0,
-        ot_fee: 0,
-        other_cost: 0,
-        total_cost: totalCostEst,
-        net_profit: netProfitEst,
+      price: price,
+      addon_price: addon,
+      revenue: totalRev,
+      fuel_cost: fuelEst,
+      driver_allowance: driverEst,
+      toll_fee: tollEst,
+      total_cost: totalCostEst,
+      net_profit: netProfitEst,
 
-        pat_letter_required: formData.pat_letter_required,
-        pat_letter_status: formData.pat_letter_required ? 'pending' : 'none',
-        invoice_no: null, // initially null until billed
-        driver_notes: formData.notes,
-      },
-    ]);
+      pat_letter_required: formData.pat_letter_required,
+      pat_letter_status: formData.pat_letter_required ? 'pending' : 'none',
+      driver_notes: formData.notes || null,
+    };
 
-    if (!error) {
-      logActivity({
-        user_id: currentUser?.id || 'sys',
-        user_name: currentUser?.name || 'User',
-        user_role: currentRole?.id || 'cs',
-        action: 'CREATE',
-        module: 'ORDERS',
-        description: `เปิดใบรับงานขนส่งใหม่: ${formData.job_no} (${amount}x${formData.container_size}' ${formData.container_type})`,
-      });
-      setOpenOrderModal(false);
-      fetchData();
+    if (editOrderId) {
+      const { error } = await supabase
+        .from('jobs')
+        .update(basePayload)
+        .eq('id', editOrderId);
+
+      if (!error) {
+        logActivity({
+          user_id: currentUser?.id || 'sys',
+          user_name: currentUser?.name || 'User',
+          user_role: currentRole?.id || 'cs',
+          action: 'UPDATE',
+          module: 'ORDERS',
+          description: `แก้ไข / Revise ข้อมูลงานขนส่ง: ${formData.job_no} (${amount}x${formData.container_size}' ${formData.container_type})`,
+        });
+        setOpenOrderModal(false);
+        setEditOrderId(null);
+        fetchData();
+      } else {
+        alert('เกิดข้อผิดพลาดในการแก้ไขงาน: ' + error.message);
+      }
     } else {
-      alert('เกิดข้อผิดพลาดในการสร้างงาน: ' + error.message);
+      const { error } = await supabase.from('jobs').insert([
+        {
+          ...basePayload,
+          waiting_fee: 0,
+          ot_fee: 0,
+          other_cost: 0,
+          invoice_no: null, // initially null until billed
+        },
+      ]);
+
+      if (!error) {
+        logActivity({
+          user_id: currentUser?.id || 'sys',
+          user_name: currentUser?.name || 'User',
+          user_role: currentRole?.id || 'cs',
+          action: 'CREATE',
+          module: 'ORDERS',
+          description: `เปิดใบรับงานขนส่งใหม่: ${formData.job_no} (${amount}x${formData.container_size}' ${formData.container_type})`,
+        });
+        setOpenOrderModal(false);
+        fetchData();
+      } else {
+        alert('เกิดข้อผิดพลาดในการสร้างงาน: ' + error.message);
+      }
     }
   };
 
@@ -593,8 +666,16 @@ export default function OrdersPage() {
                     const volumeStr = `${j.container_amount || 1}x${j.container_size || '40'}' ${j.container_type || 'HC'}`;
                     return (
                       <TableRow key={j.id} className="hover:bg-slate-50/80 text-xs">
-                        <TableCell className="font-bold text-blue-700 whitespace-nowrap font-mono">
-                          {j.job_no}
+                        <TableCell className="whitespace-nowrap font-mono">
+                          <button
+                            type="button"
+                            onClick={() => handleOpenEditModal(j)}
+                            className="font-bold text-blue-700 hover:text-blue-900 hover:underline inline-flex items-center gap-1 group text-left cursor-pointer"
+                            title="คลิกเพื่อแก้ไข / Revise คำสั่งงาน"
+                          >
+                            {j.job_no}
+                            <Edit3 className="h-3 w-3 opacity-0 group-hover:opacity-100 transition-opacity text-blue-500" />
+                          </button>
                         </TableCell>
                         <TableCell className="text-slate-600 whitespace-nowrap">
                           {j.job_date}
@@ -660,14 +741,26 @@ export default function OrdersPage() {
                           ฿{Number(j.revenue || 0).toLocaleString()}
                         </TableCell>
                         <TableCell className="text-right whitespace-nowrap">
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => handleDeleteOrder(j.id, j.job_no)}
-                            className="text-slate-400 hover:text-red-700 hover:bg-red-50 h-8 w-8"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </Button>
+                          <div className="flex items-center justify-end gap-1">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => handleOpenEditModal(j)}
+                              className="text-blue-600 hover:text-blue-800 hover:bg-blue-50 h-8 w-8"
+                              title="แก้ไข / Revise งาน"
+                            >
+                              <Edit3 className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => handleDeleteOrder(j.id, j.job_no)}
+                              className="text-slate-400 hover:text-red-700 hover:bg-red-50 h-8 w-8"
+                              title="ลบงานขนส่ง"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
                         </TableCell>
                       </TableRow>
                     );
@@ -679,17 +772,31 @@ export default function OrdersPage() {
         </CardContent>
       </Card>
 
-      {/* ================= MODAL: CREATE NEW ORDER ================= */}
-      <Dialog open={openOrderModal} onOpenChange={setOpenOrderModal}>
+      {/* ================= MODAL: CREATE / EDIT ORDER ================= */}
+      <Dialog open={openOrderModal} onOpenChange={(open) => {
+        setOpenOrderModal(open);
+        if (!open) setEditOrderId(null);
+      }}>
         <DialogContent className="sm:max-w-[720px] max-h-[90vh] overflow-y-auto">
           <form onSubmit={handleCreateOrder}>
             <DialogHeader>
               <DialogTitle className="text-xl flex items-center gap-2">
-                <ClipboardList className="h-5 w-5 text-blue-600" />
-                เปิดใบรับงานขนส่งใหม่ (New Job Order)
+                {editOrderId ? (
+                  <>
+                    <Edit3 className="h-5 w-5 text-blue-600" />
+                    แก้ไข / ปรับปรุงคำสั่งงานขนส่ง (Revise Job Order: {formData.job_no})
+                  </>
+                ) : (
+                  <>
+                    <ClipboardList className="h-5 w-5 text-blue-600" />
+                    เปิดใบรับงานขนส่งใหม่ (New Job Order)
+                  </>
+                )}
               </DialogTitle>
               <DialogDescription>
-                กรอกข้อมูลรับงาน, สเปก Volume ตู้, สายเรือ, และเส้นทาง 3 จุด หรือเลือกจาก Rate Card เพื่อดึงราคาอัตโนมัติ
+                {editOrderId
+                  ? 'ปรับปรุงรายละเอียดงานขนส่ง เช่น วันที่, เส้นทาง 3 จุด, สเปกตู้, สายเรือ, หรือราคาเรียกเก็บ'
+                  : 'กรอกข้อมูลรับงาน, สเปก Volume ตู้, สายเรือ, และเส้นทาง 3 จุด หรือเลือกจาก Rate Card เพื่อดึงราคาอัตโนมัติ'}
               </DialogDescription>
             </DialogHeader>
 
@@ -721,9 +828,9 @@ export default function OrdersPage() {
               </div>
 
               {/* 1. Job Meta */}
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-4 gap-3">
                 <div>
-                  <Label className="text-xs font-bold text-blue-900">Job ID (อัตโนมัติ) *</Label>
+                  <Label className="text-xs font-bold text-blue-900">Job ID *</Label>
                   <Input
                     required
                     value={formData.job_no}
@@ -743,7 +850,7 @@ export default function OrdersPage() {
                 <div>
                   <Label className="text-xs font-bold">ประเภทงาน *</Label>
                   <select
-                    className="w-full border rounded-md px-3 py-2 text-xs bg-white"
+                    className="w-full border rounded-md px-3 py-2 text-xs bg-white font-medium"
                     value={formData.job_type}
                     onChange={(e) => setFormData({ ...formData, job_type: e.target.value as JobType })}
                   >
@@ -751,6 +858,20 @@ export default function OrdersPage() {
                     <option value="empty_to_stuff">ลากตู้เปล่าไปบรรจุ (Export)</option>
                     <option value="empty_return">ลากตู้เปล่าคืน</option>
                     <option value="yard_move">ย้ายลาน</option>
+                  </select>
+                </div>
+                <div>
+                  <Label className="text-xs font-bold">สถานะงาน *</Label>
+                  <select
+                    className="w-full border rounded-md px-3 py-2 text-xs bg-white font-medium"
+                    value={formData.status}
+                    onChange={(e) => setFormData({ ...formData, status: e.target.value as JobStatus })}
+                  >
+                    <option value="draft">ฉบับร่าง (Draft)</option>
+                    <option value="assigned">มอบหมายแล้ว (Assigned)</option>
+                    <option value="in_progress">กำลังดำเนินการ (In Progress)</option>
+                    <option value="completed">เสร็จสิ้น (Completed)</option>
+                    <option value="cancelled">ยกเลิก (Cancelled)</option>
                   </select>
                 </div>
               </div>
@@ -1008,15 +1129,31 @@ export default function OrdersPage() {
                   </div>
                 </label>
               </div>
+
+              {/* 8. Driver Notes / Special Instructions */}
+              <div className="pt-2 border-t space-y-1">
+                <Label className="text-xs font-bold text-slate-800">
+                  หมายเหตุงาน / คำสั่งพิเศษถึงคนขับ (Special Instructions)
+                </Label>
+                <Input
+                  placeholder="เช่น นัดหมายเข้าตู้ก่อน 09:00 น., ให้ตรวจสภาพตู้แห้งสนิทไม่มีสนิม, ติดต่อคุณสมชายหน้างาน"
+                  value={formData.notes}
+                  onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
+                  className="text-xs"
+                />
+              </div>
             </div>
 
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setOpenOrderModal(false)}>
+              <Button type="button" variant="outline" onClick={() => {
+                setOpenOrderModal(false);
+                setEditOrderId(null);
+              }}>
                 ยกเลิก
               </Button>
               <Button type="submit" className="bg-blue-600 hover:bg-blue-700 gap-2">
                 <CheckCircle2 className="h-4 w-4" />
-                บันทึกคำสั่งงานขนส่ง
+                {editOrderId ? 'บันทึกการแก้ไข (Revise Order)' : 'บันทึกคำสั่งงานขนส่ง'}
               </Button>
             </DialogFooter>
           </form>

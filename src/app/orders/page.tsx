@@ -28,7 +28,8 @@ import {
   Anchor,
   ReceiptText,
   Calendar,
-  Box
+  Box,
+  Lock
 } from 'lucide-react';
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -440,6 +441,12 @@ export default function OrdersPage() {
     };
 
     if (editOrderId) {
+      const existingJob = jobs.find(j => j.id === editOrderId);
+      if (existingJob?.status === 'completed') {
+        alert('ใบงานนี้เสร็จสิ้นส่งมอบตู้เรียบร้อยแล้ว ระบบล็อกข้อมูลเพื่อป้องกันการแก้ไขย้อนหลัง');
+        return;
+      }
+
       const { error } = await supabase
         .from('jobs')
         .update(basePayload)
@@ -489,7 +496,15 @@ export default function OrdersPage() {
   };
 
   // Delete Order
-  const handleDeleteOrder = async (id: string, jobNo: string) => {
+  const handleDeleteOrder = async (id: string, jobNo: string, status?: string) => {
+    if (status === 'completed') {
+      alert(`ไม่สามารถลบงาน "${jobNo}" ได้ เนื่องจากสถานะงานเสร็จสิ้นส่งมอบตู้เรียบร้อยแล้ว`);
+      return;
+    }
+    if (status === 'in_progress') {
+      alert(`ไม่สามารถลบงาน "${jobNo}" ได้ เนื่องจากรถกำลังวิ่งงานอยู่`);
+      return;
+    }
     if (!confirm(`ยืนยันที่จะลบงานขนส่ง "${jobNo}" หรือไม่?`)) return;
     const { error } = await supabase.from('jobs').delete().eq('id', id);
     if (!error) {
@@ -747,19 +762,41 @@ export default function OrdersPage() {
                               size="icon"
                               onClick={() => handleOpenEditModal(j)}
                               className="text-blue-600 hover:text-blue-800 hover:bg-blue-50 h-8 w-8"
-                              title="แก้ไข / Revise งาน"
+                              title={j.status === 'completed' ? 'ดูข้อมูลใบงาน (งานเสร็จสิ้นส่งมอบแล้ว)' : 'แก้ไข / Revise งาน'}
                             >
                               <Edit3 className="h-3.5 w-3.5" />
                             </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              onClick={() => handleDeleteOrder(j.id, j.job_no)}
-                              className="text-slate-400 hover:text-red-700 hover:bg-red-50 h-8 w-8"
-                              title="ลบงานขนส่ง"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
+                            {j.status === 'completed' ? (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                disabled
+                                className="text-slate-300 h-8 w-8 cursor-not-allowed"
+                                title="งานเสร็จสิ้นส่งมอบแล้ว — ระบบล็อกไม่ให้ลบข้อมูล"
+                              >
+                                <Lock className="h-3.5 w-3.5 text-slate-300" />
+                              </Button>
+                            ) : j.status === 'in_progress' ? (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                disabled
+                                className="text-slate-300 h-8 w-8 cursor-not-allowed"
+                                title="รถกำลังวิ่งงานอยู่ — ไม่สามารถลบได้"
+                              >
+                                <Lock className="h-3.5 w-3.5 text-slate-300" />
+                              </Button>
+                            ) : (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => handleDeleteOrder(j.id, j.job_no, j.status)}
+                                className="text-slate-400 hover:text-red-700 hover:bg-red-50 h-8 w-8"
+                                title="ลบงานขนส่ง"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            )}
                           </div>
                         </TableCell>
                       </TableRow>
@@ -798,8 +835,20 @@ export default function OrdersPage() {
                   ? 'ปรับปรุงรายละเอียดงานขนส่ง เช่น วันที่, เส้นทาง 3 จุด, สเปกตู้, สายเรือ, หรือราคาเรียกเก็บ'
                   : 'กรอกข้อมูลรับงาน, สเปก Volume ตู้, สายเรือ, และเส้นทาง 3 จุด หรือเลือกจาก Rate Card เพื่อดึงราคาอัตโนมัติ'}
               </DialogDescription>
+              {editOrderId && jobs.find(j => j.id === editOrderId)?.status === 'completed' && (
+                <div className="p-3 bg-emerald-50 border-2 border-emerald-300 rounded-xl flex items-start gap-2.5 text-emerald-950 mt-2 text-left">
+                  <Lock className="h-5 w-5 text-emerald-700 shrink-0 mt-0.5" />
+                  <div>
+                    <div className="font-bold text-sm">🔒 ใบงานนี้เสร็จสิ้นส่งมอบตู้เรียบร้อยแล้ว (Job Completed &amp; Locked)</div>
+                    <div className="text-xs text-emerald-800 mt-0.5">
+                      ระบบล็อกข้อมูลใบงานเพื่อป้องกันการแก้ไขย้อนหลัง อันอาจกระทบต่อเอกสารทางบัญชีและใบเสร็จการท่าเรือ (PAT)
+                    </div>
+                  </div>
+                </div>
+              )}
             </DialogHeader>
 
+            <fieldset disabled={Boolean(editOrderId && jobs.find(j => j.id === editOrderId)?.status === 'completed')} className="disabled:opacity-80">
             <div className="space-y-4 py-4 text-xs">
               {/* Quick Rate Card Select */}
               <div className="p-3 bg-blue-50/70 rounded-lg border border-blue-200 space-y-1.5">
@@ -1143,18 +1192,36 @@ export default function OrdersPage() {
                 />
               </div>
             </div>
+            </fieldset>
 
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => {
-                setOpenOrderModal(false);
-                setEditOrderId(null);
-              }}>
-                ยกเลิก
-              </Button>
-              <Button type="submit" className="bg-blue-600 hover:bg-blue-700 gap-2">
-                <CheckCircle2 className="h-4 w-4" />
-                {editOrderId ? 'บันทึกการแก้ไข (Revise Order)' : 'บันทึกคำสั่งงานขนส่ง'}
-              </Button>
+              {editOrderId && jobs.find(j => j.id === editOrderId)?.status === 'completed' ? (
+                <div className="w-full flex items-center justify-between">
+                  <span className="text-xs text-slate-500 font-medium flex items-center gap-1.5">
+                    <Lock className="h-4 w-4 text-emerald-600" />
+                    ใบงานเสร็จสิ้นแล้ว — ล็อกการแก้ไข
+                  </span>
+                  <Button type="button" variant="outline" onClick={() => {
+                    setOpenOrderModal(false);
+                    setEditOrderId(null);
+                  }}>
+                    ปิดหน้าต่าง
+                  </Button>
+                </div>
+              ) : (
+                <>
+                  <Button type="button" variant="outline" onClick={() => {
+                    setOpenOrderModal(false);
+                    setEditOrderId(null);
+                  }}>
+                    ยกเลิก
+                  </Button>
+                  <Button type="submit" className="bg-blue-600 hover:bg-blue-700 gap-2">
+                    <CheckCircle2 className="h-4 w-4" />
+                    {editOrderId ? 'บันทึกการแก้ไข (Revise Order)' : 'บันทึกคำสั่งงานขนส่ง'}
+                  </Button>
+                </>
+              )}
             </DialogFooter>
           </form>
         </DialogContent>

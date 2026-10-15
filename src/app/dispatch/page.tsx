@@ -32,7 +32,8 @@ import {
   AlertTriangle,
   FileSpreadsheet,
   Calendar,
-  Anchor
+  Anchor,
+  Edit3
 } from 'lucide-react';
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -289,6 +290,15 @@ export default function DispatchPage() {
   const handleSaveAssign = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedJob) return;
+
+    if (selectedJob.status === 'completed') {
+      alert('งานนี้เสร็จสิ้นส่งมอบตู้เรียบร้อยแล้ว ระบบล็อกข้อมูลเพื่อป้องกันการแก้ไขย้อนหลัง');
+      return;
+    }
+    if (selectedJob.status === 'cancelled') {
+      alert('งานนี้ถูกยกเลิกแล้ว ไม่สามารถแก้ไขข้อมูลการจ่ายรถได้');
+      return;
+    }
 
     const { error } = await supabase
       .from('jobs')
@@ -566,15 +576,54 @@ ${job.driver_notes ? `📝 หมายเหตุ/คำสั่งพิเ�
                         </TableCell>
                         <TableCell className="text-right whitespace-nowrap">
                           <div className="flex items-center justify-end gap-1">
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => handleOpenAssign(j)}
-                              className="h-8 text-xs gap-1 text-blue-700 border-blue-300 hover:bg-blue-50"
-                            >
-                              <Truck className="h-3.5 w-3.5" />
-                              จ่ายรถ
-                            </Button>
+                            {j.status === 'draft' ? (
+                              <Button
+                                size="sm"
+                                onClick={() => handleOpenAssign(j)}
+                                className="h-8 text-xs gap-1 bg-blue-600 hover:bg-blue-700 text-white font-bold shadow-xs"
+                                title="จ่ายงานและเลือกรถ+พขร."
+                              >
+                                <Truck className="h-3.5 w-3.5" />
+                                จ่ายรถ
+                              </Button>
+                            ) : j.status === 'assigned' ? (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleOpenAssign(j)}
+                                className="h-8 text-xs gap-1 text-blue-800 border-blue-300 bg-blue-50/60 hover:bg-blue-100 font-semibold"
+                                title="แก้ไขการจัดรถหรือเปลี่ยน พขร. ก่อนวิ่งงาน"
+                              >
+                                <Edit3 className="h-3.5 w-3.5 text-blue-600" />
+                                แก้ไขจัดรถ
+                              </Button>
+                            ) : j.status === 'in_progress' ? (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleOpenAssign(j)}
+                                className="h-8 text-xs gap-1 text-amber-800 border-amber-300 bg-amber-50/60 hover:bg-amber-100 font-semibold"
+                                title="งานกำลังวิ่ง - เปลี่ยนรถ/พขร. กรณีฉุกเฉิน"
+                              >
+                                <RefreshCw className="h-3.5 w-3.5 text-amber-600" />
+                                สลับรถวิ่ง
+                              </Button>
+                            ) : j.status === 'completed' ? (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => handleOpenAssign(j)}
+                                className="h-8 text-xs gap-1 text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 font-semibold"
+                                title="งานเสร็จสิ้นส่งมอบแล้ว (ข้อมูลถูกล็อก - ดูข้อมูลรถเท่านั้น)"
+                              >
+                                <Lock className="h-3.5 w-3.5 text-emerald-600" />
+                                ดูข้อมูลรถ (ล็อก)
+                              </Button>
+                            ) : (
+                              <span className="text-[11px] text-slate-400 italic px-2 py-1">
+                                ยกเลิกแล้ว
+                              </span>
+                            )}
                             <Button
                               size="sm"
                               variant="outline"
@@ -1268,138 +1317,205 @@ ${job.driver_notes ? `📝 หมายเหตุ/คำสั่งพิเ�
             </div>
 
             {/* 2. DISPATCH ASSIGNMENT SECTION (TRUCK & DRIVER SELECTION) */}
-            <div className="space-y-4 border-t pt-4">
-              <div className="font-bold text-base text-slate-900 flex items-center gap-2">
-                <Truck className="h-5 w-5 text-blue-600" />
-                จัดสรรรถและพนักงานขับรถ (Truck &amp; Driver Assignment)
-              </div>
+            {(() => {
+              const isJobCompleted = selectedJob?.status === 'completed';
+              const isJobCancelled = selectedJob?.status === 'cancelled';
+              const isLocked = isJobCompleted || isJobCancelled;
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {/* Truck Select */}
-                <div>
-                  <Label className="text-sm font-bold text-blue-900 mb-1.5 block">
-                    เลือกรถที่ต้องการจ่ายงาน *
-                  </Label>
-                  <select
-                    required
-                    className="w-full border-2 border-blue-300 focus:border-blue-500 rounded-xl px-3 h-11 text-sm bg-white font-bold text-slate-900 shadow-xs"
-                    value={assignForm.vehicle_id}
-                    onChange={(e) => handleVehicleChange(e.target.value)}
-                  >
-                    <option value="">-- เลือกรถ --</option>
-                    {vehicles.map((v) => (
-                      <option key={v.id} value={v.id}>
-                        {v.truck_name_id || 'รถ'} ({v.plate_number}) - {v.truck_brand} {v.truck_model} [{vehicleTypeMap[v.vehicle_type] || v.vehicle_type}]
-                      </option>
-                    ))}
-                  </select>
-                </div>
+              return (
+                <div className="space-y-4 border-t pt-4">
+                  <div className="font-bold text-base text-slate-900 flex items-center justify-between">
+                    <span className="flex items-center gap-2">
+                      <Truck className="h-5 w-5 text-blue-600" />
+                      จัดสรรรถและพนักงานขับรถ (Truck &amp; Driver Assignment)
+                    </span>
+                    {isLocked && (
+                      <span className="text-xs text-emerald-800 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200 font-bold flex items-center gap-1">
+                        <Lock className="h-3.5 w-3.5 text-emerald-600" />
+                        {isJobCompleted ? 'งานเสร็จสิ้นแล้ว (ล็อกข้อมูล)' : 'งานถูกยกเลิกแล้ว'}
+                      </span>
+                    )}
+                  </div>
 
-                {/* Driver Select */}
-                {(() => {
-                  const selectedVeh = vehicles.find((v) => v.id === assignForm.vehicle_id);
-                  return (
-                    <div>
-                      <div className="flex items-center justify-between mb-1.5">
-                        <Label className="text-sm font-bold text-emerald-900">
-                          พนักงานขับรถ (พขร.) *
-                        </Label>
-                        <span className="text-[11px] text-emerald-700 font-medium">
-                          (ดึงอัตโนมัติ / สลับคนขับได้)
-                        </span>
-                      </div>
-                      <select
-                        required
-                        className="w-full border-2 border-emerald-300 focus:border-emerald-500 rounded-xl px-3 h-11 text-sm bg-white font-bold text-slate-900 shadow-xs"
-                        value={assignForm.driver_id}
-                        onChange={(e) => handleDriverChange(e.target.value)}
-                      >
-                        <option value="">-- เลือกคนขับ --</option>
-                        {drivers.map((d) => {
-                          const isPaired = selectedVeh?.driver_id === d.id || selectedVeh?.driver?.id === d.id;
-                          return (
-                            <option key={d.id} value={d.id}>
-                              {d.name} {d.phone ? `(${d.phone})` : ''} {isPaired ? '⭐ [คนขับประจำรถคันนี้]' : ''}
-                            </option>
-                          );
-                        })}
-                      </select>
-                      <div className="text-xs text-slate-600 mt-1 flex items-center justify-between">
-                        <span>เบอร์โทรศัพท์: <strong className="font-mono text-slate-900">{assignForm.driver_phone || '-'}</strong></span>
-                        {assignForm.driver_name && (
-                          <span className="text-emerald-700 font-semibold text-[11px]">พขร. พร้อมวิ่งงาน</span>
-                        )}
+                  {/* Security / Locked Banners */}
+                  {isJobCompleted && (
+                    <div className="p-3.5 bg-emerald-50 border-2 border-emerald-300 rounded-xl flex items-start gap-3 text-emerald-950">
+                      <Lock className="h-5 w-5 text-emerald-700 shrink-0 mt-0.5" />
+                      <div>
+                        <div className="font-bold text-sm">🔒 งานนี้เสร็จสิ้นส่งมอบตู้เรียบร้อยแล้ว (Job Completed &amp; Locked)</div>
+                        <div className="text-xs text-emerald-800 mt-0.5">
+                          ระบบล็อกข้อมูลรถและพนักงานขับรถ ไม่สามารถแก้ไขหรือเปลี่ยนรถย้อนหลังได้ เพื่อรักษาความถูกต้องของข้อมูลบัญชีและสถิติ
+                        </div>
                       </div>
                     </div>
-                  );
-                })()}
-              </div>
+                  )}
 
-              {/* Container No & Seal No (Optional at dispatch time) */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
-                <div>
-                  <Label className="text-xs font-semibold text-slate-700 mb-1 block">
-                    หมายเลขตู้ (Container No.)
-                  </Label>
-                  <Input
-                    placeholder="เช่น TGHU9482710 (ถ้าทราบแล้ว)"
-                    value={assignForm.container_no}
-                    onChange={(e) => setAssignForm({ ...assignForm, container_no: e.target.value })}
-                    className="font-mono text-sm uppercase h-10 font-bold"
-                  />
+                  {isJobCancelled && (
+                    <div className="p-3.5 bg-rose-50 border-2 border-rose-300 rounded-xl flex items-start gap-3 text-rose-950">
+                      <AlertTriangle className="h-5 w-5 text-rose-700 shrink-0 mt-0.5" />
+                      <div>
+                        <div className="font-bold text-sm">⛔ งานนี้ถูกยกเลิกแล้ว (Job Cancelled)</div>
+                        <div className="text-xs text-rose-800 mt-0.5">
+                          ไม่สามารถจ่ายรถหรือมอบหมายงานสำหรับใบงานที่ถูกยกเลิกได้
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* Truck Select */}
+                    <div>
+                      <Label className="text-sm font-bold text-blue-900 mb-1.5 block">
+                        เลือกรถที่ต้องการจ่ายงาน *
+                      </Label>
+                      <select
+                        required
+                        disabled={isLocked}
+                        className="w-full border-2 border-blue-300 focus:border-blue-500 rounded-xl px-3 h-11 text-sm bg-white font-bold text-slate-900 shadow-xs disabled:bg-slate-100 disabled:cursor-not-allowed"
+                        value={assignForm.vehicle_id}
+                        onChange={(e) => handleVehicleChange(e.target.value)}
+                      >
+                        <option value="">-- เลือกรถ --</option>
+                        {vehicles.map((v) => (
+                          <option key={v.id} value={v.id}>
+                            {v.truck_name_id || 'รถ'} ({v.plate_number}) - {v.truck_brand} {v.truck_model} [{vehicleTypeMap[v.vehicle_type] || v.vehicle_type}]
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Driver Select */}
+                    {(() => {
+                      const selectedVeh = vehicles.find((v) => v.id === assignForm.vehicle_id);
+                      return (
+                        <div>
+                          <div className="flex items-center justify-between mb-1.5">
+                            <Label className="text-sm font-bold text-emerald-900">
+                              พนักงานขับรถ (พขร.) *
+                            </Label>
+                            {!isLocked && (
+                              <span className="text-[11px] text-emerald-700 font-medium">
+                                (ดึงอัตโนมัติ / สลับคนขับได้)
+                              </span>
+                            )}
+                          </div>
+                          <select
+                            required
+                            disabled={isLocked}
+                            className="w-full border-2 border-emerald-300 focus:border-emerald-500 rounded-xl px-3 h-11 text-sm bg-white font-bold text-slate-900 shadow-xs disabled:bg-slate-100 disabled:cursor-not-allowed"
+                            value={assignForm.driver_id}
+                            onChange={(e) => handleDriverChange(e.target.value)}
+                          >
+                            <option value="">-- เลือกคนขับ --</option>
+                            {drivers.map((d) => {
+                              const isPaired = selectedVeh?.driver_id === d.id || selectedVeh?.driver?.id === d.id;
+                              return (
+                                <option key={d.id} value={d.id}>
+                                  {d.name} {d.phone ? `(${d.phone})` : ''} {isPaired ? '⭐ [คนขับประจำรถคันนี้]' : ''}
+                                </option>
+                              );
+                            })}
+                          </select>
+                          <div className="text-xs text-slate-600 mt-1 flex items-center justify-between">
+                            <span>เบอร์โทรศัพท์: <strong className="font-mono text-slate-900">{assignForm.driver_phone || '-'}</strong></span>
+                            {assignForm.driver_name && (
+                              <span className="text-emerald-700 font-semibold text-[11px]">พขร. ประจำงาน</span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  {/* Container No & Seal No (Optional at dispatch time) */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
+                    <div>
+                      <Label className="text-xs font-semibold text-slate-700 mb-1 block">
+                        หมายเลขตู้ (Container No.)
+                      </Label>
+                      <Input
+                        disabled={isLocked}
+                        placeholder="เช่น TGHU9482710 (ถ้าทราบแล้ว)"
+                        value={assignForm.container_no}
+                        onChange={(e) => setAssignForm({ ...assignForm, container_no: e.target.value })}
+                        className="font-mono text-sm uppercase h-10 font-bold disabled:bg-slate-100 disabled:cursor-not-allowed"
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-xs font-semibold text-slate-700 mb-1 block">
+                        หมายเลขซีล (Seal No.)
+                      </Label>
+                      <Input
+                        disabled={isLocked}
+                        placeholder="เช่น EMCA291834 (ถ้าทราบแล้ว)"
+                        value={assignForm.seal_no}
+                        onChange={(e) => setAssignForm({ ...assignForm, seal_no: e.target.value })}
+                        className="font-mono text-sm uppercase h-10 font-bold disabled:bg-slate-100 disabled:cursor-not-allowed"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Job Status */}
+                  <div>
+                    <Label className="text-xs font-semibold text-slate-700 mb-1 block">
+                      ปรับสถานะงานขนส่ง
+                    </Label>
+                    <select
+                      disabled={isLocked}
+                      className="w-full border rounded-lg px-3 h-10 text-sm bg-white font-medium disabled:bg-slate-100 disabled:cursor-not-allowed"
+                      value={assignForm.status}
+                      onChange={(e) => setAssignForm({ ...assignForm, status: e.target.value })}
+                    >
+                      <option value="assigned">มอบหมายแล้ว (Assigned)</option>
+                      <option value="in_progress">กำลังวิ่งงาน (In Progress)</option>
+                      <option value="draft">ฉบับร่าง (Draft)</option>
+                      {isJobCompleted && <option value="completed">เสร็จสิ้น (Completed)</option>}
+                    </select>
+                  </div>
+
+                  {/* Quick Line Copy */}
+                  <div className="pt-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={copyLineToClipboard}
+                      className="w-full gap-2 text-emerald-800 border-2 border-emerald-300 bg-emerald-50 hover:bg-emerald-100 h-11 text-sm font-bold shadow-xs"
+                    >
+                      {copiedLine ? <Check className="h-5 w-5 text-emerald-600" /> : <Copy className="h-5 w-5 text-emerald-600" />}
+                      {copiedLine ? 'คัดลอกข้อความสรุปงานแล้ว!' : 'คัดลอกสรุปงานส่ง LINE ให้ พขร.'}
+                    </Button>
+                  </div>
+
+                  <DialogFooter className="pt-4 border-t gap-2 sm:gap-0">
+                    {isLocked ? (
+                      <div className="w-full flex items-center justify-between">
+                        <span className="text-xs text-slate-500 font-medium flex items-center gap-1.5">
+                          <Lock className="h-4 w-4 text-emerald-600" />
+                          {isJobCompleted ? 'งานเสร็จสิ้นส่งมอบแล้ว — ข้อมูลถูกล็อกการแก้ไข' : 'งานถูกยกเลิกแล้ว'}
+                        </span>
+                        <Button type="button" variant="outline" onClick={() => setOpenAssignModal(false)} className="h-11 px-6 text-sm">
+                          ปิดหน้าต่าง
+                        </Button>
+                      </div>
+                    ) : (
+                      <>
+                        <Button type="button" variant="outline" onClick={() => setOpenAssignModal(false)} className="h-11 px-5 text-sm">
+                          ยกเลิก
+                        </Button>
+                        <Button type="submit" className="bg-blue-600 hover:bg-blue-700 h-11 px-8 text-sm font-bold shadow-md gap-1.5">
+                          <CheckCircle2 className="h-4 w-4" />
+                          {selectedJob?.status === 'assigned' 
+                            ? 'บันทึกการแก้ไขจัดรถ' 
+                            : selectedJob?.status === 'in_progress' 
+                            ? 'บันทึกการสลับรถวิ่ง' 
+                            : 'บันทึกจ่ายงาน'}
+                        </Button>
+                      </>
+                    )}
+                  </DialogFooter>
                 </div>
-                <div>
-                  <Label className="text-xs font-semibold text-slate-700 mb-1 block">
-                    หมายเลขซีล (Seal No.)
-                  </Label>
-                  <Input
-                    placeholder="เช่น EMCA291834 (ถ้าทราบแล้ว)"
-                    value={assignForm.seal_no}
-                    onChange={(e) => setAssignForm({ ...assignForm, seal_no: e.target.value })}
-                    className="font-mono text-sm uppercase h-10 font-bold"
-                  />
-                </div>
-              </div>
-
-              {/* Job Status */}
-              <div>
-                <Label className="text-xs font-semibold text-slate-700 mb-1 block">
-                  ปรับสถานะงานขนส่ง
-                </Label>
-                <select
-                  className="w-full border rounded-lg px-3 h-10 text-sm bg-white font-medium"
-                  value={assignForm.status}
-                  onChange={(e) => setAssignForm({ ...assignForm, status: e.target.value })}
-                >
-                  <option value="assigned">มอบหมายแล้ว (Assigned)</option>
-                  <option value="in_progress">กำลังวิ่งงาน (In Progress)</option>
-                  <option value="draft">ฉบับร่าง (Draft)</option>
-                </select>
-              </div>
-
-              {/* Quick Line Copy */}
-              <div className="pt-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={copyLineToClipboard}
-                  className="w-full gap-2 text-emerald-800 border-2 border-emerald-300 bg-emerald-50 hover:bg-emerald-100 h-11 text-sm font-bold shadow-xs"
-                >
-                  {copiedLine ? <Check className="h-5 w-5 text-emerald-600" /> : <Copy className="h-5 w-5 text-emerald-600" />}
-                  {copiedLine ? 'คัดลอกข้อความสรุปงานแล้ว!' : 'คัดลอกสรุปงานส่ง LINE ให้ พขร.'}
-                </Button>
-              </div>
-            </div>
-
-            <DialogFooter className="pt-4 border-t gap-2 sm:gap-0">
-              <Button type="button" variant="outline" onClick={() => setOpenAssignModal(false)} className="h-11 px-5 text-sm">
-                ยกเลิก
-              </Button>
-              <Button type="submit" className="bg-blue-600 hover:bg-blue-700 h-11 px-8 text-sm font-bold shadow-md gap-1.5">
-                <CheckCircle2 className="h-4 w-4" />
-                บันทึกจ่ายงาน
-              </Button>
-            </DialogFooter>
+              );
+            })()}
           </form>
         </DialogContent>
       </Dialog>

@@ -33,7 +33,10 @@ import {
   FileSpreadsheet,
   Calendar,
   Anchor,
-  Edit3
+  Edit3,
+  Phone,
+  Search,
+  Filter
 } from 'lucide-react';
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -82,6 +85,28 @@ const statusConfig: Record<string, { label: string; badgeClass: string }> = {
   cancelled: { label: 'ยกเลิก', badgeClass: 'bg-rose-100 text-rose-800 border-rose-200' },
 };
 
+const formatCheckinTime = (isoString?: string | null) => {
+  if (!isoString) return null;
+  try {
+    const d = new Date(isoString);
+    if (isNaN(d.getTime())) return isoString;
+    return d.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' }) + ' น.';
+  } catch {
+    return isoString;
+  }
+};
+
+const formatCheckinDateTime = (isoString?: string | null) => {
+  if (!isoString) return null;
+  try {
+    const d = new Date(isoString);
+    if (isNaN(d.getTime())) return isoString;
+    return d.toLocaleDateString('th-TH', { day: 'numeric', month: 'short' }) + ' ' + d.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' }) + ' น.';
+  } catch {
+    return isoString;
+  }
+};
+
 export default function DispatchPage() {
   const { currentUser, currentRole } = useAuth();
   const [activeTab, setActiveTab] = useState('dispatch');
@@ -118,6 +143,62 @@ export default function DispatchPage() {
       return (j as any)[dispatchSort.key];
     });
   }, [jobs, dispatchSort]);
+
+  // Tab 2: Live CS Timeline Filter & Search State
+  const [timelineStatusFilter, setTimelineStatusFilter] = useState<string>('active');
+  const [timelineSearch, setTimelineSearch] = useState<string>('');
+
+  const timelineCounts = useMemo(() => {
+    const counts = {
+      active: 0,
+      all: jobs.length,
+      in_progress: 0,
+      assigned: 0,
+      draft: 0,
+      completed: 0,
+      cancelled: 0,
+    };
+    jobs.forEach((j) => {
+      if (j.status !== 'completed' && j.status !== 'cancelled') counts.active++;
+      if (j.status === 'in_progress') counts.in_progress++;
+      else if (j.status === 'assigned') counts.assigned++;
+      else if (j.status === 'draft') counts.draft++;
+      else if (j.status === 'completed') counts.completed++;
+      else if (j.status === 'cancelled') counts.cancelled++;
+    });
+    return counts;
+  }, [jobs]);
+
+  const filteredTimelineJobs = useMemo(() => {
+    return jobs.filter((job) => {
+      // 1. Status Filter (default: 'active' = all non-completed and non-cancelled)
+      if (timelineStatusFilter === 'active') {
+        if (job.status === 'completed' || job.status === 'cancelled') return false;
+      } else if (timelineStatusFilter !== 'all') {
+        if (job.status !== timelineStatusFilter) return false;
+      }
+
+      // 2. Search query filter
+      if (timelineSearch.trim()) {
+        const q = timelineSearch.toLowerCase().trim();
+        const matchJobNo = job.job_no?.toLowerCase().includes(q);
+        const matchCustomer = job.customer?.company_name?.toLowerCase().includes(q);
+        const matchBooking = job.book_no?.toLowerCase().includes(q) || job.booking_no?.toLowerCase().includes(q);
+        const matchBL = job.bl_no?.toLowerCase().includes(q);
+        const matchTruck = (job.vehicle?.truck_name_id || '').toLowerCase().includes(q) || 
+                           (job.vehicle?.plate_number || '').toLowerCase().includes(q) || 
+                           (job.truck_name_id || '').toLowerCase().includes(q);
+        const matchDriver = (job.driver?.name || '').toLowerCase().includes(q) || (job.driver?.phone || '').toLowerCase().includes(q);
+        const matchContainer = (job.container_no || '').toLowerCase().includes(q);
+        const matchSeal = (job.seal_no || '').toLowerCase().includes(q);
+        const matchRoute = `${job.pickup_place || ''} ${job.packing_place || ''} ${job.return_place || ''}`.toLowerCase().includes(q);
+        if (!matchJobNo && !matchCustomer && !matchBooking && !matchBL && !matchTruck && !matchDriver && !matchContainer && !matchSeal && !matchRoute) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }, [jobs, timelineStatusFilter, timelineSearch]);
 
   // Assignment Form State (Truck auto-pairs with Driver)
   const [assignForm, setAssignForm] = useState({
@@ -437,6 +518,7 @@ ${job.driver_notes ? `📝 หมายเหตุ/คำสั่งพิเ�
       seal_no: driverAppForm.seal_no,
       temperature: driverAppForm.temperature ? parseFloat(driverAppForm.temperature) : null,
       checkin_location: driverAppForm.checkin_return || driverAppForm.checkin_packing || driverAppForm.checkin_pickup,
+      checkin_time: new Date().toISOString(),
       driver_notes: driverAppForm.driver_notes,
       status: isCompleting ? 'completed' : 'in_progress',
     };
@@ -656,111 +738,650 @@ ${job.driver_notes ? `📝 หมายเหตุ/คำสั่งพิเ�
         </TabsContent>
 
         {/* ================= TAB 2: LIVE CS TIMELINE MONITORING ================= */}
-        <TabsContent value="timeline">
-          <div className="space-y-4">
-            <Card className="border-slate-200 shadow-sm">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base font-bold text-slate-900 flex items-center gap-2">
-                  <Eye className="h-5 w-5 text-blue-600" />
-                  หน้าจอติดตามงานสด 3 จุดตรวจ (Live Customer Service Monitoring)
-                </CardTitle>
-                <CardDescription>
-                  ฝ่าย CS และออฟฟิศมองเห็นความคืบหน้าเรียลไทม์: พิกัด GPS, เวลาเช็คอิน, รูปถ่ายตรวจตู้ 5 มุม, และรูปตู้ที่ล็อคซีล
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                {jobs.slice(0, 5).map((job) => (
-                  <div key={job.id} className="border rounded-xl p-4 bg-white shadow-xs space-y-3">
-                    {/* Job Meta Banner */}
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b gap-2">
-                      <div className="flex items-center gap-3">
-                        <span className="font-mono font-bold text-sm text-blue-700 bg-blue-50 px-2.5 py-1 rounded border border-blue-200">
-                          {job.job_no}
-                        </span>
+        <TabsContent value="timeline" className="space-y-6">
+          {/* Header & Filter Control Bar */}
+          <Card className="border-slate-200 shadow-sm bg-white">
+            <CardContent className="p-4 md:p-6 space-y-4">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div>
+                  <h2 className="text-lg md:text-xl font-black text-slate-900 flex items-center gap-2">
+                    <Eye className="h-6 w-6 text-blue-600" />
+                    หน้าจอติดตามงานสด 3 จุดตรวจ (Live Operations &amp; CS Monitoring)
+                  </h2>
+                  <p className="text-slate-500 text-xs md:text-sm mt-0.5">
+                    สำหรับฝ่าย CS และผู้ควบคุมงานติดตามสถานะงานสด: กำหนดการ 3 จุดตรวจ, รถ + พขร. ที่รับผิดชอบ, เวลาเช็คอิน, และพิกัด GPS
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={fetchData}
+                    className="gap-1.5 text-xs font-bold text-slate-700 bg-slate-50 hover:bg-slate-100"
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+                    รีเฟรชข้อมูลสด
+                  </Button>
+                </div>
+              </div>
+
+              {/* Filters & Search Row */}
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pt-3 border-t border-slate-100">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-bold text-slate-700 flex items-center gap-1">
+                    <Filter className="h-3.5 w-3.5 text-blue-600" />
+                    กรองสถานะ:
+                  </span>
+
+                  {/* Primary Dropdown */}
+                  <select
+                    className="border-2 border-blue-300 focus:border-blue-500 rounded-xl px-3 py-1.5 text-xs md:text-sm font-bold bg-white text-slate-900 shadow-xs cursor-pointer"
+                    value={timelineStatusFilter}
+                    onChange={(e) => setTimelineStatusFilter(e.target.value)}
+                  >
+                    <option value="active">⚡ กำลังติดตามงาน (ยังไม่เสร็จสิ้น) ({timelineCounts.active})</option>
+                    <option value="all">📁 ทุกสถานะงานทั้งหมด ({timelineCounts.all})</option>
+                    <option value="in_progress">🚛 กำลังวิ่งงาน (In Progress) ({timelineCounts.in_progress})</option>
+                    <option value="assigned">📋 มอบหมายแล้ว (Assigned) ({timelineCounts.assigned})</option>
+                    <option value="draft">📝 ฉบับร่าง / รอจ่ายรถ (Draft) ({timelineCounts.draft})</option>
+                    <option value="completed">✅ เสร็จสิ้นส่งมอบแล้ว (Completed) ({timelineCounts.completed})</option>
+                    <option value="cancelled">⛔ ยกเลิกแล้ว (Cancelled) ({timelineCounts.cancelled})</option>
+                  </select>
+
+                  {/* Quick Filter Pill Buttons */}
+                  <div className="hidden sm:flex items-center gap-1.5 ml-1">
+                    <button
+                      type="button"
+                      onClick={() => setTimelineStatusFilter('active')}
+                      className={`text-xs px-3 py-1.5 rounded-lg font-bold transition-all ${
+                        timelineStatusFilter === 'active'
+                          ? 'bg-blue-600 text-white shadow-xs'
+                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      }`}
+                    >
+                      กำลังติดตาม ({timelineCounts.active})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTimelineStatusFilter('in_progress')}
+                      className={`text-xs px-3 py-1.5 rounded-lg font-bold transition-all ${
+                        timelineStatusFilter === 'in_progress'
+                          ? 'bg-amber-500 text-white shadow-xs'
+                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      }`}
+                    >
+                      กำลังวิ่ง ({timelineCounts.in_progress})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTimelineStatusFilter('assigned')}
+                      className={`text-xs px-3 py-1.5 rounded-lg font-bold transition-all ${
+                        timelineStatusFilter === 'assigned'
+                          ? 'bg-blue-500 text-white shadow-xs'
+                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      }`}
+                    >
+                      มอบหมายแล้ว ({timelineCounts.assigned})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTimelineStatusFilter('all')}
+                      className={`text-xs px-3 py-1.5 rounded-lg font-bold transition-all ${
+                        timelineStatusFilter === 'all'
+                          ? 'bg-slate-800 text-white shadow-xs'
+                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      }`}
+                    >
+                      ทั้งหมด ({timelineCounts.all})
+                    </button>
+                  </div>
+                </div>
+
+                {/* Search Box */}
+                <div className="flex items-center gap-2">
+                  <div className="relative w-full sm:w-64">
+                    <Search className="h-4 w-4 absolute left-3 top-2.5 text-slate-400" />
+                    <Input
+                      placeholder="ค้นหา Job, รถ, พขร, ตู้..."
+                      className="pl-9 pr-8 h-9 text-xs rounded-xl bg-slate-50 border-slate-300"
+                      value={timelineSearch}
+                      onChange={(e) => setTimelineSearch(e.target.value)}
+                    />
+                    {timelineSearch && (
+                      <button
+                        type="button"
+                        onClick={() => setTimelineSearch('')}
+                        className="absolute right-2.5 top-2.5 text-xs text-slate-400 hover:text-slate-600"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+                  <span className="text-xs font-semibold text-slate-500 whitespace-nowrap">
+                    พบ {filteredTimelineJobs.length} รายการ
+                  </span>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Cards List */}
+          {filteredTimelineJobs.length === 0 ? (
+            <Card className="border-dashed border-2 border-slate-300 p-12 text-center bg-white rounded-2xl">
+              <Eye className="h-12 w-12 text-slate-300 mx-auto mb-3" />
+              <h3 className="text-base font-bold text-slate-700">ไม่พบรายการงานตามเงื่อนไขที่เลือก</h3>
+              <p className="text-xs text-slate-500 mt-1">
+                {timelineStatusFilter === 'active'
+                  ? 'ปัจจุบันไม่มีงานที่อยู่ระหว่างติดตาม (เสร็จสิ้นหรือยกเลิกหมดแล้ว)'
+                  : 'ไม่พบงานที่ตรงกับคำค้นหาหรือตัวกรองที่กำหนด'}
+              </p>
+              <div className="mt-4 flex justify-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setTimelineStatusFilter('all');
+                    setTimelineSearch('');
+                  }}
+                  className="text-xs font-bold"
+                >
+                  แสดงงานทั้งหมด ({jobs.length})
+                </Button>
+              </div>
+            </Card>
+          ) : (
+            <div className="space-y-5">
+              {filteredTimelineJobs.map((job) => {
+                const isAssigned = Boolean(job.vehicle_id || job.vehicle || job.truck_name_id);
+                const isReeferJob = job.container_type === 'RH' || (job.container_type as string) === 'RF' || job.container_type === 'Reefer';
+                const isCompleted = job.status === 'completed';
+                const isInProgress = job.status === 'in_progress';
+
+                return (
+                  <div
+                    key={job.id}
+                    className={`border-2 rounded-2xl p-5 md:p-6 bg-white shadow-sm hover:shadow-md transition-all space-y-4 ${
+                      isInProgress 
+                        ? 'border-amber-300 ring-2 ring-amber-100' 
+                        : job.status === 'assigned'
+                        ? 'border-blue-300 ring-2 ring-blue-50'
+                        : isCompleted
+                        ? 'border-emerald-200'
+                        : 'border-slate-200'
+                    }`}
+                  >
+                    {/* Top Row: Job Meta & Prominent Truck + Driver */}
+                    <div className="flex flex-col lg:flex-row lg:items-start justify-between pb-4 border-b border-slate-100 gap-4">
+                      {/* Left: Job Identification */}
+                      <div className="space-y-2 flex-1">
+                        <div className="flex flex-wrap items-center gap-2.5">
+                          <span className="font-mono font-black text-lg md:text-xl text-blue-700 bg-blue-50 px-3.5 py-1.5 rounded-xl border border-blue-200 shadow-xs flex items-center gap-1.5">
+                            {job.job_no}
+                          </span>
+                          <Badge variant="outline" className={`${statusConfig[job.status]?.badgeClass || ''} text-xs md:text-sm px-3 py-1 font-bold rounded-lg shadow-xs`}>
+                            {statusConfig[job.status]?.label || job.status}
+                          </Badge>
+                          <Badge variant="outline" className="text-xs bg-slate-50 text-slate-700 border-slate-300 font-semibold px-2.5 py-1">
+                            {jobTypeMap[job.job_type] || job.job_type}
+                          </Badge>
+                          <span className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 bg-slate-100 px-2.5 py-1 rounded-lg">
+                            <Calendar className="h-3.5 w-3.5 text-slate-500" />
+                            วันที่เปิดงาน: <strong className="font-mono text-slate-900">{job.job_date}</strong>
+                          </span>
+                        </div>
+
                         <div>
-                          <div className="font-bold text-slate-900 text-sm">{job.customer?.company_name}</div>
-                          <div className="text-[11px] text-slate-500">
-                            สายเรือ: <strong className="text-slate-700">{job.ship_line || '-'}</strong> | Booking: <strong className="font-mono text-slate-700">{job.book_no || '-'}</strong> | Volume: <strong className="font-mono text-blue-800">{job.container_amount || 1}x{job.container_size}&apos; {job.container_type}</strong>
+                          <div className="text-base md:text-lg font-black text-slate-900 flex items-center gap-2">
+                            <span>{job.customer?.company_name || 'ลูกค้าทั่วไป'}</span>
+                            {job.customer?.branch && (
+                              <span className="text-xs font-normal text-slate-500">({job.customer.branch})</span>
+                            )}
+                          </div>
+                          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-600 mt-1">
+                            <span>สายเรือ: <strong className="text-slate-900 font-bold">{job.ship_line || '-'}</strong></span>
+                            <span>Booking: <strong className="font-mono text-slate-900 font-bold">{job.book_no || '-'}</strong></span>
+                            {job.bl_no && <span>B/L: <strong className="font-mono text-slate-900 font-bold">{job.bl_no}</strong></span>}
+                            <span>สเปกตู้: <strong className="font-mono text-blue-800 font-bold bg-blue-50 px-2 py-0.5 rounded border border-blue-200">{job.container_amount || 1}x{job.container_size}&apos; {job.container_type}</strong></span>
+                            {job.commodity_name && <span>สินค้า: <strong className="text-slate-900 font-medium">{job.commodity_name}</strong></span>}
                           </div>
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-2">
-                        <Badge variant="outline" className={statusConfig[job.status]?.badgeClass || ''}>
-                          {statusConfig[job.status]?.label || job.status}
-                        </Badge>
-                        <div className="text-xs text-right">
-                          <div className="font-bold text-slate-800">{job.vehicle?.truck_name_id || 'ยังไม่ระบุรถ'}</div>
-                          <div className="text-slate-500 text-[11px]">{job.driver?.name || '-'}</div>
-                        </div>
+                      {/* Right: Prominent Truck & Driver Box */}
+                      <div className="lg:w-80 shrink-0">
+                        {isAssigned ? (
+                          <div className="bg-gradient-to-br from-blue-50/60 to-emerald-50/40 border-2 border-emerald-200/90 rounded-2xl p-3.5 shadow-xs space-y-2">
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-black text-emerald-900 flex items-center gap-1.5">
+                                <Truck className="h-4 w-4 text-emerald-600" />
+                                รถ + พขร. ที่รับผิดชอบ
+                              </span>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-6 text-xs text-blue-700 hover:text-blue-800 hover:bg-blue-100/50 px-2 font-bold"
+                                onClick={() => handleOpenAssign(job)}
+                              >
+                                <Edit3 className="h-3 w-3 mr-1" />
+                                {isCompleted ? 'ดูข้อมูล' : 'ปรับเปลี่ยน'}
+                              </Button>
+                            </div>
+
+                            <div className="flex items-center justify-between gap-2 pt-0.5">
+                              <div className="font-black text-slate-900 text-sm md:text-base">
+                                {job.vehicle?.truck_name_id || job.truck_name_id || 'รถบรรทุก'}
+                              </div>
+                              {job.vehicle?.plate_number && (
+                                <Badge variant="outline" className="font-mono font-black text-xs bg-white text-slate-900 border-slate-300 shadow-xs px-2 py-0.5">
+                                  {job.vehicle.plate_number}
+                                </Badge>
+                              )}
+                            </div>
+
+                            <div className="flex items-center justify-between text-xs pt-1.5 border-t border-emerald-200/60">
+                              <div className="flex items-center gap-1.5 font-bold text-slate-800">
+                                <UserCheck className="h-3.5 w-3.5 text-emerald-600" />
+                                <span>{job.driver?.name || 'พขร.'}</span>
+                              </div>
+                              {job.driver?.phone ? (
+                                <a 
+                                  href={`tel:${job.driver.phone}`} 
+                                  className="text-emerald-700 hover:text-emerald-800 font-mono font-bold flex items-center gap-1 text-xs hover:underline bg-white px-2 py-0.5 rounded border border-emerald-200"
+                                  title="โทรหา พขร."
+                                >
+                                  <Phone className="h-3 w-3" />
+                                  {job.driver.phone}
+                                </a>
+                              ) : (
+                                <span className="text-slate-400 text-xs">-</span>
+                              )}
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="bg-amber-50/90 border-2 border-dashed border-amber-300 rounded-2xl p-3.5 shadow-xs flex flex-col justify-between space-y-2.5">
+                            <div className="flex items-start gap-2 text-amber-900 font-bold text-xs">
+                              <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+                              <div>
+                                <div>ยังไม่ได้จัดสรร รถ + คนขับ</div>
+                                <div className="text-[11px] font-normal text-amber-700">จำเป็นต้องจ่ายรถเพื่อให้เริ่มวิ่งงานได้</div>
+                              </div>
+                            </div>
+                            <Button
+                              size="sm"
+                              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold h-9 text-xs rounded-xl gap-1.5 shadow-xs"
+                              onClick={() => handleOpenAssign(job)}
+                            >
+                              <Truck className="h-4 w-4" />
+                              จ่ายรถและมอบหมายงาน
+                            </Button>
+                          </div>
+                        )}
                       </div>
                     </div>
 
                     {/* 3 Step Visual Route Progress */}
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-1">
-                      {/* Step 1: Pickup */}
-                      <div className={`p-3 rounded-lg border text-xs space-y-1.5 ${job.status !== 'draft' ? 'bg-blue-50/60 border-blue-200' : 'bg-slate-50 border-slate-200'}`}>
-                        <div className="flex items-center justify-between font-bold text-blue-900">
-                          <span>1. รับตู้ (Pickup)</span>
-                          <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 pt-1">
+                      {/* ================= STEP 1: PICKUP ================= */}
+                      <div className={`p-4 rounded-xl border-2 space-y-3 transition-all ${
+                        job.status !== 'draft' 
+                          ? 'bg-blue-50/50 border-blue-200 shadow-xs' 
+                          : 'bg-slate-50 border-slate-200'
+                      }`}>
+                        <div className="flex items-center justify-between pb-2 border-b border-blue-200/60 font-black text-sm text-blue-950">
+                          <span className="flex items-center gap-1.5">
+                            <span className="h-6 w-6 rounded-full bg-blue-600 text-white flex items-center justify-center text-xs font-mono">1</span>
+                            รับตู้ (Pickup)
+                          </span>
+                          {job.status !== 'draft' ? (
+                            <span className="flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                              <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+                              {isInProgress || isCompleted ? 'ตรวจรับแล้ว' : 'มอบหมายแล้ว'}
+                            </span>
+                          ) : (
+                            <span className="text-[11px] font-semibold text-slate-500">รอจ่ายงาน</span>
+                          )}
                         </div>
-                        <div className="text-slate-800 font-semibold">{job.pickup_place || job.origin?.name || 'ลานตู้'}</div>
-                        <div className="text-[11px] text-slate-500">ตู้: <strong className="font-mono text-slate-900">{job.container_no || 'MRKU0670006'}</strong></div>
-                        <div className="flex items-center gap-2 pt-1">
-                          <Badge variant="outline" className="text-[10px] bg-white text-emerald-800 border-emerald-300">
-                            📸 ตรวจตู้ 5 รูปครบ
+
+                        {/* Appointment Date */}
+                        <div className="flex items-center gap-2 p-2 bg-white rounded-lg border border-blue-200/80 text-xs md:text-sm font-bold text-blue-950">
+                          <Calendar className="h-4 w-4 text-blue-600 shrink-0" />
+                          <span className="text-slate-600 font-semibold">วันนัดรับตู้:</span>
+                          <span className="font-mono text-blue-800 font-black">{job.pickup_date || job.job_date || '-'}</span>
+                        </div>
+
+                        {/* Location */}
+                        <div className="space-y-1">
+                          <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wide">สถานที่รับตู้:</div>
+                          <div className="flex items-start gap-1.5 font-bold text-slate-900 text-sm">
+                            <MapPin className="h-4 w-4 text-blue-600 shrink-0 mt-0.5" />
+                            <span className="break-words">{job.pickup_place || job.origin?.name || 'ลานตู้คอนเทนเนอร์'}</span>
+                          </div>
+                        </div>
+
+                        {/* Container Number */}
+                        <div className="flex items-center justify-between text-xs bg-white/90 p-2 rounded-lg border border-blue-100">
+                          <span className="text-slate-600 font-semibold flex items-center gap-1">
+                            <Box className="h-3.5 w-3.5 text-blue-600" />
+                            เบอร์ตู้:
+                          </span>
+                          <strong className="font-mono text-xs md:text-sm font-black text-slate-900">
+                            {job.container_no || 'รอ พขร. ตรวจรับ'}
+                          </strong>
+                        </div>
+
+                        {/* Check-in & Timestamp */}
+                        {job.checkin_time || job.checkin_location || isInProgress || isCompleted ? (
+                          <div className="p-2.5 bg-emerald-100/70 border border-emerald-300 rounded-lg space-y-1 text-xs">
+                            <div className="flex items-center justify-between font-bold text-emerald-950">
+                              <span className="flex items-center gap-1.5">
+                                <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+                                เช็คอินจุดรับตู้เรียบร้อย
+                              </span>
+                              <span className="font-mono text-[11px] font-black text-emerald-900 bg-white px-2 py-0.5 rounded border border-emerald-300">
+                                {formatCheckinTime(job.checkin_time) || 'บันทึกเวลาแล้ว'}
+                              </span>
+                            </div>
+                            {job.checkin_location && (
+                              <div className="text-[11px] text-emerald-800 font-medium break-words pt-0.5">
+                                {job.checkin_location}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="p-2 bg-slate-100/80 border border-slate-200 rounded-lg text-xs text-slate-500 flex items-center gap-1.5">
+                            <Clock className="h-3.5 w-3.5 text-slate-400 shrink-0" />
+                            <span>รอ พขร. เดินทางถึงและกดเช็คอิน</span>
+                          </div>
+                        )}
+
+                        {/* Proof & Inspections Badges */}
+                        <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                          <Badge variant="outline" className="text-[10px] md:text-xs bg-white text-emerald-800 border-emerald-300 font-semibold shadow-2xs">
+                            📸 ตรวจสภาพตู้ 5 มุม
                           </Badge>
-                          <Badge variant="outline" className="text-[10px] bg-white text-blue-700 border-blue-300">
-                            📄 มีใบ EIR
+                          <Badge variant="outline" className="text-[10px] md:text-xs bg-white text-blue-700 border-blue-300 font-semibold shadow-2xs">
+                            📄 ใบกำกับ EIR
                           </Badge>
                         </div>
                       </div>
 
-                      {/* Step 2: Packing */}
-                      <div className={`p-3 rounded-lg border text-xs space-y-1.5 ${job.status === 'in_progress' || job.status === 'completed' ? 'bg-amber-50/60 border-amber-200' : 'bg-slate-50 border-slate-200'}`}>
-                        <div className="flex items-center justify-between font-bold text-slate-900">
-                          <span>2. บรรจุสินค้า (Packing)</span>
-                          {job.status === 'in_progress' ? <span className="h-2 w-2 rounded-full bg-amber-500 animate-pulse" /> : null}
+                      {/* ================= STEP 2: PACKING ================= */}
+                      <div className={`p-4 rounded-xl border-2 space-y-3 transition-all ${
+                        isInProgress || isCompleted 
+                          ? 'bg-amber-50/50 border-amber-200 shadow-xs' 
+                          : 'bg-slate-50 border-slate-200'
+                      }`}>
+                        <div className="flex items-center justify-between pb-2 border-b border-amber-200/60 font-black text-sm text-amber-950">
+                          <span className="flex items-center gap-1.5">
+                            <span className="h-6 w-6 rounded-full bg-amber-500 text-white flex items-center justify-center text-xs font-mono">2</span>
+                            บรรจุสินค้า (Packing)
+                          </span>
+                          {isInProgress ? (
+                            <span className="flex items-center gap-1 text-[11px] font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded-full border border-amber-300">
+                              <span className="h-2 w-2 rounded-full bg-amber-500 animate-pulse" />
+                              กำลังดำเนินการ
+                            </span>
+                          ) : isCompleted ? (
+                            <span className="flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                              <CheckCircle2 className="h-3 w-3 text-emerald-600" />
+                              บรรจุเสร็จสิ้น
+                            </span>
+                          ) : (
+                            <span className="text-[11px] font-semibold text-slate-500">รอเข้าบรรจุ</span>
+                          )}
                         </div>
-                        <div className="text-slate-800 font-semibold">{job.packing_place || 'โรงงานลูกค้า'}</div>
-                        <div className="text-[11px] text-slate-500">ซีล: <strong className="font-mono text-slate-900">{job.seal_no || 'SN-998124'}</strong></div>
-                        <div className="flex items-center gap-2 pt-1">
-                          <Badge variant="outline" className="text-[10px] bg-white text-slate-700">
-                            🔒 ล็อคซีลแล้ว
+
+                        {/* Appointment Date */}
+                        <div className="flex items-center gap-2 p-2 bg-white rounded-lg border border-amber-200/80 text-xs md:text-sm font-bold text-amber-950">
+                          <Calendar className="h-4 w-4 text-amber-600 shrink-0" />
+                          <span className="text-slate-600 font-semibold">วันนัดบรรจุ:</span>
+                          <span className="font-mono text-amber-800 font-black">{job.packing_date || job.job_date || '-'}</span>
+                        </div>
+
+                        {/* Location */}
+                        <div className="space-y-1">
+                          <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wide">สถานที่บรรจุ:</div>
+                          <div className="flex items-start gap-1.5 font-bold text-slate-900 text-sm">
+                            <MapPin className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+                            <span className="break-words">{job.packing_place || 'โรงงานลูกค้า'}</span>
+                          </div>
+                        </div>
+
+                        {/* Seal Number & Reefer Temp */}
+                        <div className="space-y-1.5">
+                          <div className="flex items-center justify-between text-xs bg-white/90 p-2 rounded-lg border border-amber-100">
+                            <span className="text-slate-600 font-semibold flex items-center gap-1">
+                              <Lock className="h-3.5 w-3.5 text-amber-600" />
+                              เบอร์ซีล:
+                            </span>
+                            <strong className="font-mono text-xs md:text-sm font-black text-slate-900">
+                              {job.seal_no || 'รอซีลหลังบรรจุเสร็จ'}
+                            </strong>
+                          </div>
+
+                          {isReeferJob && (
+                            <div className="flex items-center justify-between text-xs bg-blue-50 p-2 rounded-lg border border-blue-200">
+                              <span className="text-blue-900 font-bold flex items-center gap-1">
+                                <Thermometer className="h-3.5 w-3.5 text-blue-600" />
+                                อุณหภูมิตู้เย็น:
+                              </span>
+                              <strong className="font-mono font-bold text-blue-800">
+                                {job.temperature !== null ? `${job.temperature} °C` : '-18.5 °C'}
+                              </strong>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Check-in & Status */}
+                        {isCompleted ? (
+                          <div className="p-2.5 bg-emerald-100/70 border border-emerald-300 rounded-lg space-y-1 text-xs">
+                            <div className="flex items-center justify-between font-bold text-emerald-950">
+                              <span className="flex items-center gap-1.5">
+                                <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+                                บรรจุและล็อคซีลเสร็จสิ้น
+                              </span>
+                              <span className="font-mono text-[11px] font-black text-emerald-900 bg-white px-2 py-0.5 rounded border border-emerald-300">
+                                สำเร็จ
+                              </span>
+                            </div>
+                          </div>
+                        ) : isInProgress ? (
+                          <div className="p-2.5 bg-amber-100/70 border border-amber-300 rounded-lg space-y-1 text-xs">
+                            <div className="flex items-center justify-between font-bold text-amber-950">
+                              <span className="flex items-center gap-1.5">
+                                <Clock className="h-4 w-4 text-amber-600 shrink-0" />
+                                ถึงโรงงาน / กำลังบรรจุ
+                              </span>
+                              <span className="font-mono text-[11px] font-black text-amber-900 bg-white px-2 py-0.5 rounded border border-amber-300">
+                                In Progress
+                              </span>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="p-2 bg-slate-100/80 border border-slate-200 rounded-lg text-xs text-slate-500 flex items-center gap-1.5">
+                            <Clock className="h-3.5 w-3.5 text-slate-400 shrink-0" />
+                            <span>รอขบวนรถเดินทางเข้าโรงงานบรรจุ</span>
+                          </div>
+                        )}
+
+                        {/* Proof & Inspections Badges */}
+                        <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                          <Badge variant="outline" className="text-[10px] md:text-xs bg-white text-slate-700 border-slate-300 font-semibold shadow-2xs">
+                            🔒 ล็อคซีลเรียบร้อย
                           </Badge>
-                          {job.container_type === 'RH' && (
-                            <Badge variant="outline" className="text-[10px] bg-blue-100 text-blue-800 font-mono">
-                              ❄️ -18.5 °C
+                          {isReeferJob && (
+                            <Badge variant="outline" className="text-[10px] md:text-xs bg-blue-100 text-blue-800 border-blue-300 font-mono font-bold shadow-2xs">
+                              ❄️ ควบคุมอุณหภูมิ
                             </Badge>
                           )}
                         </div>
                       </div>
 
-                      {/* Step 3: Return */}
-                      <div className={`p-3 rounded-lg border text-xs space-y-1.5 ${job.status === 'completed' ? 'bg-emerald-50/60 border-emerald-200' : 'bg-slate-50 border-slate-200'}`}>
-                        <div className="flex items-center justify-between font-bold text-slate-900">
-                          <span>3. คืนตู้ (Return)</span>
-                          {job.status === 'completed' ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" /> : null}
+                      {/* ================= STEP 3: RETURN ================= */}
+                      <div className={`p-4 rounded-xl border-2 space-y-3 transition-all ${
+                        isCompleted 
+                          ? 'bg-emerald-50/50 border-emerald-200 shadow-xs' 
+                          : 'bg-slate-50 border-slate-200'
+                      }`}>
+                        <div className="flex items-center justify-between pb-2 border-b border-emerald-200/60 font-black text-sm text-emerald-950">
+                          <span className="flex items-center gap-1.5">
+                            <span className="h-6 w-6 rounded-full bg-emerald-600 text-white flex items-center justify-center text-xs font-mono">3</span>
+                            คืนตู้ / เข้าท่า (Return)
+                          </span>
+                          {isCompleted ? (
+                            <span className="flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                              <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+                              ส่งมอบสำเร็จ
+                            </span>
+                          ) : isInProgress ? (
+                            <span className="flex items-center gap-1 text-[11px] font-bold text-blue-800 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-200">
+                              <Truck className="h-3 w-3 text-blue-600" />
+                              กำลังเดินทาง
+                            </span>
+                          ) : (
+                            <span className="text-[11px] font-semibold text-slate-500">รอส่งมอบตู้</span>
+                          )}
                         </div>
-                        <div className="text-slate-800 font-semibold">{job.return_place || job.destination?.name || 'ท่าเรือคืนตู้'}</div>
-                        <div className="text-[11px] text-slate-500">ปลายทาง: <strong className="text-purple-900">{job.return_place?.includes('PAT') ? 'ท่าเรือคลองเตย (PAT)' : 'ท่าเรือแหลมฉบัง'}</strong></div>
-                        <div className="flex items-center gap-2 pt-1">
-                          <Badge variant="outline" className="text-[10px] bg-white text-slate-700">
+
+                        {/* Appointment Date */}
+                        <div className="flex items-center gap-2 p-2 bg-white rounded-lg border border-emerald-200/80 text-xs md:text-sm font-bold text-emerald-950">
+                          <Calendar className="h-4 w-4 text-emerald-600 shrink-0" />
+                          <span className="text-slate-600 font-semibold">วันนัดคืนตู้:</span>
+                          <span className="font-mono text-emerald-800 font-black">{job.return_date || job.job_date || '-'}</span>
+                        </div>
+
+                        {/* Location */}
+                        <div className="space-y-1">
+                          <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wide">สถานที่คืนตู้:</div>
+                          <div className="flex items-start gap-1.5 font-bold text-slate-900 text-sm">
+                            <Anchor className="h-4 w-4 text-emerald-600 shrink-0 mt-0.5" />
+                            <span className="break-words">{job.return_place || job.destination?.name || 'ท่าเรือ / ลานคืนตู้'}</span>
+                          </div>
+                        </div>
+
+                        {/* Terminal Destination */}
+                        <div className="text-xs text-slate-700 bg-white/90 p-2 rounded-lg border border-emerald-100 flex items-center justify-between">
+                          <span className="text-slate-500 font-semibold">ปลายทาง:</span>
+                          <strong className="text-purple-900 font-bold font-mono">
+                            {job.return_place?.includes('PAT') || job.destination?.name?.includes('คลองเตย')
+                              ? 'ท่าเรือกรุงเทพ คลองเตย (PAT)'
+                              : 'ท่าเรือแหลมฉบัง (LCB)'}
+                          </strong>
+                        </div>
+
+                        {/* Check-in & Status */}
+                        {isCompleted ? (
+                          <div className="p-2.5 bg-emerald-100/80 border border-emerald-300 rounded-lg space-y-1 text-xs">
+                            <div className="flex items-center justify-between font-bold text-emerald-950">
+                              <span className="flex items-center gap-1.5">
+                                <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+                                คืนตู้และปิดงานเสร็จสิ้นสมบูรณ์
+                              </span>
+                              <span className="font-mono text-[11px] font-black text-emerald-900 bg-white px-2 py-0.5 rounded border border-emerald-300">
+                                {formatCheckinTime(job.checkin_time) || 'เรียบร้อย'}
+                              </span>
+                            </div>
+                            <div className="text-[11px] text-emerald-800 font-medium">
+                              ✅ ส่งมอบตู้และตรวจรับเอกสารครบถ้วน
+                            </div>
+                          </div>
+                        ) : isInProgress ? (
+                          <div className="p-2 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-800 flex items-center gap-1.5">
+                            <Truck className="h-3.5 w-3.5 text-blue-600 animate-pulse shrink-0" />
+                            <span>กำลังเดินทางมุ่งหน้าสู่ท่าเรือ / ลานคืนตู้</span>
+                          </div>
+                        ) : (
+                          <div className="p-2 bg-slate-100/80 border border-slate-200 rounded-lg text-xs text-slate-500 flex items-center gap-1.5">
+                            <Clock className="h-3.5 w-3.5 text-slate-400 shrink-0" />
+                            <span>รอส่งมอบตู้ที่ปลายทาง</span>
+                          </div>
+                        )}
+
+                        {/* Proof & Inspections Badges */}
+                        <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                          <Badge variant="outline" className="text-[10px] md:text-xs bg-white text-slate-700 border-slate-300 font-semibold shadow-2xs">
                             🧾 สลิปคืนตู้
                           </Badge>
+                          <Badge variant="outline" className="text-[10px] md:text-xs bg-white text-emerald-800 border-emerald-300 font-semibold shadow-2xs">
+                            📄 EIR คืนตู้
+                          </Badge>
                           {job.pat_letter_required && (
-                            <Badge variant="outline" className="text-[10px] bg-purple-100 text-purple-800">
+                            <Badge variant="outline" className="text-[10px] md:text-xs bg-purple-100 text-purple-800 border-purple-200 font-semibold shadow-2xs">
                               จดหมาย PAT พร้อม
                             </Badge>
                           )}
                         </div>
                       </div>
                     </div>
+
+                    {/* Driver Notes (if any) */}
+                    {job.driver_notes && (
+                      <div className="p-3 bg-amber-50/80 border border-amber-200 rounded-xl text-xs text-amber-900 flex items-start gap-2">
+                        <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+                        <div>
+                          <strong className="font-bold">หมายเหตุหน้างาน / คำสั่งพิเศษ:</strong> {job.driver_notes}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Card Action Bar */}
+                    <div className="flex flex-wrap items-center justify-between pt-3 border-t border-slate-100 gap-2">
+                      <div className="text-xs text-slate-500">
+                        อัปเดตล่าสุด: <span className="font-mono font-semibold text-slate-700">{formatCheckinDateTime(job.updated_at || job.created_at)}</span>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-8 text-xs font-bold gap-1 text-slate-700 bg-white hover:bg-slate-50"
+                          onClick={() => {
+                            setSelectedJob(job);
+                            setOpenPrintModal(true);
+                          }}
+                        >
+                          <Printer className="h-3.5 w-3.5 text-slate-500" />
+                          พิมพ์ใบสั่งงาน พขร.
+                        </Button>
+
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-8 text-xs font-bold gap-1 text-slate-700 bg-white hover:bg-slate-50"
+                          onClick={() => {
+                            setSelectedJob(job);
+                            copyLineToClipboard();
+                          }}
+                        >
+                          <Send className="h-3.5 w-3.5 text-blue-600" />
+                          คัดลอกข้อความ LINE
+                        </Button>
+
+                        <Button
+                          size="sm"
+                          className="h-8 text-xs font-bold gap-1 bg-blue-600 hover:bg-blue-700 text-white"
+                          onClick={() => handleOpenAssign(job)}
+                        >
+                          {job.status === 'completed' ? (
+                            <>
+                              <Lock className="h-3.5 w-3.5" />
+                              ดูข้อมูลรถ (เสร็จสิ้น)
+                            </>
+                          ) : (
+                            <>
+                              <Truck className="h-3.5 w-3.5" />
+                              {job.status === 'draft' ? 'จ่ายรถและมอบหมาย' : 'จัดการ / แก้ไขจัดรถ'}
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                    </div>
                   </div>
-                ))}
-              </CardContent>
-            </Card>
-          </div>
+                );
+              })}
+            </div>
+          )}
         </TabsContent>
 
         {/* ================= TAB 3: DRIVER MOBILE WEB APP ================= */}
